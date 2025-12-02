@@ -2,83 +2,141 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 
-# Ρυθμίσεις Σελίδας
-st.set_page_config(page_title="AI HVAC Expert", page_icon="🔧", layout="centered")
+# --- 1. ΒΑΣΙΚΕΣ ΡΥΘΜΙΣΕΙΣ ---
+st.set_page_config(
+    page_title="HVAC Pro",
+    page_icon="🔧",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
-# CSS Styling
-st.markdown("""
-<style>
-    .stApp { background-color: #0f172a; color: #e2e8f0; }
-    .stChatMessage { border-radius: 15px; padding: 10px; }
-    .stButton>button { width: 100%; border-radius: 8px; background-color: #3b82f6; color: white; }
-</style>
-""", unsafe_allow_html=True)
-
-# Sidebar
+# --- 2. SIDEBAR & ΡΥΘΜΙΣΕΙΣ ---
 with st.sidebar:
     st.header("⚙️ Ρυθμίσεις")
-    api_key = st.text_input("Gemini API Key", type="password", placeholder="AIzaSy...")
-    if api_key:
-        genai.configure(api_key=api_key)
-        st.success("✅ Συνδέθηκε!")
-    else:
-        st.warning("⚠️ Βάλε το κλειδί σου")
+    
+    # Διακόπτης Θέματος (Light/Dark)
+    theme_mode = st.radio("Θέμα Εμφάνισης:", ["☀️ Ημέρα (Light)", "🌙 Νύχτα (Dark)"])
     
     st.divider()
-    model_option = st.selectbox("Μοντέλο AI", ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"])
+    
+    # API Key
+    api_key = st.text_input("🔑 API Key", type="password", placeholder="AIzaSy...")
+    if api_key:
+        genai.configure(api_key=api_key)
+        st.caption("✅ Συνδέθηκε")
+    
     st.divider()
-    uploaded_files = st.file_uploader("📂 Ανέβασε Manuals/Φώτο", accept_multiple_files=True, type=['pdf', 'jpg', 'png'])
+    
+    # Μοντέλο
+    model_option = st.selectbox("🤖 Μοντέλο AI", ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"])
 
-# Main App
-st.title("🔧 AI HVAC Technician")
-st.caption("Cloud Edition • Python Power")
+# --- 3. CUSTOM CSS (ΕΜΦΑΝΙΣΗ) ---
+# Εδώ κρύβουμε τα "διαφημιστικά" και φτιάχνουμε τα χρώματα
+hide_streamlit_style = """
+            <style>
+            #MainMenu {visibility: hidden;} /* Κρύβει το μενού πάνω δεξιά */
+            footer {visibility: hidden;}    /* Κρύβει το 'Made with Streamlit' */
+            header {visibility: hidden;}    /* Κρύβει την πάνω μπάρα */
+            .stDeployButton {display:none;} /* Κρύβει το κουμπί Deploy */
+            
+            /* Ρυθμίσεις για Κινητά */
+            .stApp { margin-top: -80px; } /* Κερδίζουμε χώρο πάνω */
+            
+            /* Στυλ Μηνυμάτων */
+            .stChatMessage {
+                border-radius: 12px;
+                padding: 1rem;
+                font-size: 18px !important; /* Μεγαλύτερα γράμματα */
+            }
+            </style>
+            """
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-mode = st.radio("Ειδικότητα:", ["AC / Κλιματισμός", "❄️ Ψύξη", "🔥 Λέβητες"], horizontal=True)
+# Δυναμικό CSS ανάλογα με την επιλογή του χρήστη
+if "Ημέρα" in theme_mode:
+    st.markdown("""
+    <style>
+        .stApp { background-color: #ffffff; color: #000000; }
+        .stChatMessage { background-color: #f3f4f6; border: 1px solid #e5e7eb; color: #000000; }
+        div[data-testid="stChatMessageContent"] { color: #000000; font-weight: 500; }
+        p { font-size: 18px; }
+    </style>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <style>
+        .stApp { background-color: #0f172a; color: #e2e8f0; }
+        .stChatMessage { background-color: #1e293b; border: 1px solid #334155; }
+    </style>
+    """, unsafe_allow_html=True)
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# --- 4. ΚΥΡΙΩΣ ΕΦΑΡΜΟΓΗ ---
+st.title("🔧 HVAC Expert")
+
+# Επιλογή Ειδικότητας (Με εικονίδια για ευκολία)
+col1, col2, col3 = st.columns(3)
+with col1:
+    ac_mode = st.button("❄️ AC", use_container_width=True)
+with col2:
+    ref_mode = st.button("🧊 Ψύξη", use_container_width=True)
+with col3:
+    gas_mode = st.button("🔥 Αέριο", use_container_width=True)
+
+# Διαχείριση κατάστασης (State)
+if "current_mode" not in st.session_state: st.session_state.current_mode = "Κλιματισμός"
+if ac_mode: st.session_state.current_mode = "Κλιματισμός"
+if ref_mode: st.session_state.current_mode = "Ψύξη"
+if gas_mode: st.session_state.current_mode = "Λέβητες Αερίου"
+
+st.caption(f"Λειτουργία: **{st.session_state.current_mode}**")
+
+# Ιστορικό
+if "messages" not in st.session_state: st.session_state.messages = []
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-def get_gemini_response(prompt, images=None):
+# --- 5. LOGIC & INPUTS ---
+def get_response(prompt, img=None):
     try:
         model = genai.GenerativeModel(model_option)
         content = [prompt]
-        if images:
-            for img in images:
-                content.append(img)
-        response = model.generate_content(content)
-        return response.text
+        if img: content.append(img)
+        return model.generate_content(content).text
     except Exception as e:
-        return f"❌ Σφάλμα: {str(e)}"
+        return f"❌ Error: {str(e)}"
 
-prompt = st.chat_input("Γράψε τη βλάβη...")
+# Κουμπί Κάμερας (Μετονομασμένο & Καθαρό)
+# Στα κινητά, αυτό το κουμπί ανοίγει επιλογή: "Camera" ή "Files"
+uploaded_file = st.file_uploader("📷 Πάτα εδώ για Φώτο/Βίντεο ή PDF", type=['jpg','png','jpeg','pdf'], label_visibility="visible")
 
-if prompt and api_key:
-    st.session_state.messages.append({"role": "user", "content": prompt})
+# Chat Input (Ενσωματωμένο μικρόφωνο πληκτρολογίου)
+user_input = st.chat_input("Γράψε τη βλάβη...")
+
+if user_input and api_key:
+    # Εμφάνιση χρήστη
+    st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(user_input)
 
-    sys_instruction = "Είσαι τεχνικός HVAC. Απάντησε τεχνικά στα Ελληνικά."
-    if "AC" in mode: sys_instruction = "Είσαι τεχνικός Κλιματισμού."
-    elif "Ψύξη" in mode: sys_instruction = "Είσαι ψυκτικός."
-    
-    full_prompt = f"{sys_instruction} Ερώτηση: {prompt}"
+    # Προετοιμασία Prompt
+    sys_prompt = f"Είσαι τεχνικός {st.session_state.current_mode}. Απάντησε τεχνικά, σύντομα και στα Ελληνικά."
+    final_prompt = f"{sys_prompt}\nΕρώτηση: {user_input}"
 
-    image_parts = []
-    if uploaded_files:
-        for uploaded_file in uploaded_files:
-            if uploaded_file.type.startswith('image'):
-                image = Image.open(uploaded_file)
-                image_parts.append(image)
+    # Εικόνα
+    img_data = None
+    if uploaded_file and uploaded_file.type.startswith('image'):
+        img_data = Image.open(uploaded_file)
+        st.toast("📎 Εικόνα επισυνάφθηκε!")
 
+    # Απάντηση AI
     with st.chat_message("assistant"):
-        with st.spinner("Σκέφτεται..."):
-            response = get_gemini_response(full_prompt, image_parts)
-            st.markdown(response)
-            
-    st.session_state.messages.append({"role": "assistant", "content": response})
-elif prompt and not api_key:
-    st.error("⛔ Βάλε το API Key στις Ρυθμίσεις.")
+        with st.spinner("🔍 Ανάλυση..."):
+            reply = get_response(final_prompt, img_data)
+            st.markdown(reply)
+    
+    st.session_state.messages.append({"role": "assistant", "content": reply})
+
+elif user_input and not api_key:
+    st.error("⚠️ Πήγαινε στις Ρυθμίσεις (πάνω αριστερά >) και βάλε το API Key.")
