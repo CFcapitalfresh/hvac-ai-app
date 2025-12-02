@@ -1,133 +1,134 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
+import tempfile
+import os
+import time
 
 # --- ΡΥΘΜΙΣΕΙΣ ΣΕΛΙΔΑΣ ---
-st.set_page_config(
-    page_title="HVAC Expert",
-    page_icon="🔥",
-    layout="centered"
-)
+st.set_page_config(page_title="HVAC Expert v3", page_icon="🔥", layout="centered")
 
-# --- CSS (Καθαρό στυλ) ---
+# --- CSS STYLING ---
 st.markdown("""
     <style>
         .stChatMessage { border-radius: 12px; }
-        /* Κάνε το κουμπί της κάμερας πιο ωραίο */
         div[data-testid="stCameraInput"] { border-radius: 15px; overflow: hidden; }
-        /* Κρύψε το footer */
+        #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
     </style>
 """, unsafe_allow_html=True)
 
 # --- ΤΙΤΛΟΣ ---
-st.title("🔧 HVAC Expert")
+st.title("🔧 HVAC Expert (Video AI)")
 
-# --- ΡΥΘΜΙΣΕΙΣ (ΤΩΡΑ ΣΤΗΝ ΚΕΝΤΡΙΚΗ ΟΘΟΝΗ) ---
-# Αντί για Sidebar, το βάζουμε εδώ για να το βρίσκεις εύκολα
-with st.expander("🔐 Ρυθμίσεις & API Key (Πάτα εδώ)", expanded=False):
-    st.caption("Ρύθμισε τη σύνδεση με το AI")
-    
-    # API Key Input
-    # Χρησιμοποιούμε session_state για να μην χάνεται το κλειδί όταν πατάς άλλα κουμπιά
-    if "api_key" not in st.session_state:
-        st.session_state.api_key = ""
-        
-    user_key = st.text_input("🔑 Google API Key", value=st.session_state.api_key, type="password", placeholder="AIzaSy...")
-    
-    if user_key:
-        st.session_state.api_key = user_key
-        genai.configure(api_key=user_key)
-        st.success("✅ Το σύστημα συνδέθηκε!")
-    
-    st.divider()
-    model_option = st.selectbox("Επιλογή Μοντέλου", ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"])
+# --- ΑΥΤΟΜΑΤΗ ΣΥΝΔΕΣΗ (SECRETS) ---
+# Ψάχνουμε αν υπάρχει το κλειδί στα "Secrets" του Streamlit Cloud
+if "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+    genai.configure(api_key=api_key)
+    # Δεν δείχνουμε τίποτα, συνδέεται σιωπηλά και γρήγορα
+else:
+    # Αν δεν υπάρχει στα Secrets, ζητάμε από τον χρήστη (Fall back)
+    with st.expander("🔐 Ρυθμίσεις (Αν δεν έχεις βάλει Secrets)", expanded=True):
+        api_key = st.text_input("API Key", type="password")
+        if api_key:
+            genai.configure(api_key=api_key)
 
-# --- ΕΛΕΓΧΟΣ ΑΝ ΛΕΙΠΕΙ ΤΟ ΚΛΕΙΔΙ ---
-if not st.session_state.api_key:
-    st.warning("☝️ Για να ξεκινήσεις, πάτα το κουμπί **'🔐 Ρυθμίσεις'** από πάνω και βάλε τον κωδικό σου.")
-    st.stop() # Σταματάει εδώ μέχρι να μπει το κλειδί
+if not api_key:
+    st.warning("⚠️ Δεν βρέθηκε κλειδί. Ρύθμισέ το στα Secrets ή βάλε το παραπάνω.")
+    st.stop()
 
 # --- ΕΠΙΛΟΓΗ ΛΕΙΤΟΥΡΓΙΑΣ ---
-col1, col2, col3 = st.columns(3)
-with col1:
-    if st.button("❄️ AC", use_container_width=True): st.session_state.current_mode = "Τεχνικός Κλιματισμού (Split/VRV)"
-with col2:
-    if st.button("🧊 Ψύξη", use_container_width=True): st.session_state.current_mode = "Ψυκτικός (Βιομηχανική Ψύξη)"
-with col3:
-    if st.button("🔥 Αέριο", use_container_width=True): st.session_state.current_mode = "Τεχνικός Καυστήρων Αερίου"
-
-# Default Mode
 if "current_mode" not in st.session_state:
     st.session_state.current_mode = "Τεχνικός HVAC"
 
-st.caption(f"Λειτουργία: **{st.session_state.current_mode}**")
+c1, c2, c3 = st.columns(3)
+if c1.button("❄️ AC", use_container_width=True): st.session_state.current_mode = "Τεχνικός Κλιματισμού"
+if c2.button("🧊 Ψύξη", use_container_width=True): st.session_state.current_mode = "Ψυκτικός"
+if c3.button("🔥 Αέριο", use_container_width=True): st.session_state.current_mode = "Τεχνικός Καυστήρων"
+
+st.caption(f"Mode: **{st.session_state.current_mode}**")
 
 # --- CHAT HISTORY ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Εμφάνιση μηνυμάτων
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-# --- AI LOGIC ---
-def get_gemini_response(prompt, images=None):
+# --- AI LOGIC (PHOTO & VIDEO) ---
+def process_ai_request(prompt, media_files):
+    model = genai.GenerativeModel("gemini-1.5-flash") # Το Flash είναι το καλύτερο για βίντεο
+    content = [prompt]
+    
+    for file in media_files:
+        # Αν είναι εικόνα
+        if file["type"] == "image":
+            content.append(file["data"])
+        # Αν είναι βίντεο (θέλει ειδική διαδικασία)
+        elif file["type"] == "video":
+            with st.spinner("📤 Ανεβάζω το βίντεο στο AI..."):
+                video_file = genai.upload_file(path=file["path"])
+                
+            # Περιμένουμε να το επεξεργαστεί η Google
+            while video_file.state.name == "PROCESSING":
+                time.sleep(2)
+                video_file = genai.get_file(video_file.name)
+            
+            if video_file.state.name == "FAILED":
+                return "❌ Το βίντεο απέτυχε να αναλυθεί."
+                
+            content.append(video_file)
+            
     try:
-        model = genai.GenerativeModel(model_option)
-        content = [prompt]
-        if images:
-            for img in images:
-                content.append(img)
         response = model.generate_content(content)
         return response.text
     except Exception as e:
-        return f"❌ Σφάλμα: {str(e)}"
+        return f"❌ Error: {str(e)}"
 
-# --- INPUT TOOLS (CAMERA & TEXT) ---
+# --- INPUT AREA (TABS) ---
+tab_photo, tab_video, tab_files = st.tabs(["📸 Φώτο (Live)", "📹 Βίντεο", "📂 Αρχεία"])
 
-# Tabs για Κάμερα/Αρχεία
-tab_cam, tab_file = st.tabs(["📸 Κάμερα", "📂 Αρχεία"])
+media_to_send = []
 
-with tab_cam:
-    camera_img = st.camera_input("Λήψη φωτογραφίας", label_visibility="collapsed")
+with tab_photo:
+    cam_img = st.camera_input("Λήψη", label_visibility="collapsed")
+    if cam_img:
+        img = Image.open(cam_img)
+        media_to_send.append({"type": "image", "data": img})
 
-with tab_file:
-    uploaded_files = st.file_uploader("Επιλογή αρχείων", accept_multiple_files=True, type=['pdf', 'jpg', 'png'], label_visibility="collapsed")
+with tab_video:
+    # Το Streamlit δεν έχει "Live Cam Video" ακόμα, αλλά το uploader ανοίγει την κάμερα βίντεο στο κινητό!
+    uploaded_video = st.file_uploader("Εγγραφή/Επιλογή Βίντεο", type=['mp4', 'mov', 'avi'])
+    if uploaded_video:
+        # Σώζουμε το βίντεο προσωρινά για να το στείλουμε
+        tfile = tempfile.NamedTemporaryFile(delete=False) 
+        tfile.write(uploaded_video.read())
+        media_to_send.append({"type": "video", "path": tfile.name})
+        st.video(uploaded_video) # Preview
 
-# Text Input
+with tab_files:
+    uploaded_doc = st.file_uploader("PDF ή Εικόνες", type=['pdf', 'jpg', 'png'], accept_multiple_files=True)
+    if uploaded_doc:
+        for f in uploaded_doc:
+            if f.type.startswith('image'):
+                media_to_send.append({"type": "image", "data": Image.open(f)})
+            # Σημείωση: Για PDF χρειάζεται extra κώδικας, εδώ εστιάζουμε σε Media
+
 prompt = st.chat_input("Γράψε τη βλάβη...")
 
-# --- PROCESSING ---
 if prompt:
-    # 1. User Message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 2. Context
-    full_prompt = f"Είσαι {st.session_state.current_mode}. Απάντησε τεχνικά και σύντομα στα Ελληνικά.\nΕρώτηση: {prompt}"
+    sys = f"Είσαι {st.session_state.current_mode}. Ανάλυσε τα δεδομένα (εικόνα/βίντεο) και απάντησε τεχνικά."
+    full_prompt = f"{sys}\nΕρώτηση: {prompt}"
 
-    # 3. Handle Images
-    image_parts = []
-    
-    # Από Κάμερα
-    if camera_img:
-        img = Image.open(camera_img)
-        image_parts.append(img)
-        
-    # Από Αρχεία
-    if uploaded_files:
-        for uploaded_file in uploaded_files:
-            if uploaded_file.type.startswith('image'):
-                image = Image.open(uploaded_file)
-                image_parts.append(image)
-
-    # 4. Generate Response
     with st.chat_message("assistant"):
-        with st.spinner("🔍 Ανάλυση..."):
-            response = get_gemini_response(full_prompt, image_parts)
-            st.markdown(response)
+        with st.spinner("🧠 Το AI μελετάει το βίντεο/φώτο..."):
+            reply = process_ai_request(full_prompt, media_to_send)
+            st.markdown(reply)
             
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    st.session_state.messages.append({"role": "assistant", "content": reply})
