@@ -10,183 +10,157 @@ import tempfile
 import os
 import time
 
-# --- ΡΥΘΜΙΣΕΙΣ ΣΕΛΙΔΑΣ ---
-st.set_page_config(page_title="HVAC Controller 2.0", page_icon="🎛️", layout="centered")
+# --- SETUP ---
+st.set_page_config(page_title="HVAC Master", page_icon="🔧", layout="centered")
 
-# --- CSS (Στυλ) ---
+# --- CSS ---
 st.markdown("""<style>
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} .stDeployButton {display:none;}
     div[data-testid="stCameraInput"] button {background-color: #ef4444; color: white;}
     .stChatMessage { border-radius: 12px; }
-    /* Έμφαση στο επιλεγμένο mode */
-    div.stRadio > label { font-weight: bold; font-size: 16px; color: #60a5fa; }
 </style>""", unsafe_allow_html=True)
 
-# --- ΣΥΝΔΕΣΗ (DRIVE & AI) ---
-auth_status = "⏳ ..."
+# --- ΣΥΝΔΕΣΗ ---
+auth_status = "⏳ Σύνδεση..."
 drive_service = None
 
 try:
-    # 1. Gemini Auth
+    # 1. Gemini
     if "GEMINI_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
     
-    # 2. Drive Auth
+    # 2. Drive
     if "GCP_SERVICE_ACCOUNT" in st.secrets:
         gcp_raw = st.secrets["GCP_SERVICE_ACCOUNT"].strip()
         if gcp_raw.startswith("'") and gcp_raw.endswith("'"): gcp_raw = gcp_raw[1:-1]
         
         info = json.loads(gcp_raw)
-        if "private_key" in info: info["private_key"] = info["private_key"].replace("\\n", "\n")
+        if "private_key" in info:
+            info["private_key"] = info["private_key"].replace("\\n", "\n")
             
         creds = service_account.Credentials.from_service_account_info(
             info, scopes=['https://www.googleapis.com/auth/drive.readonly']
         )
         drive_service = build('drive', 'v3', credentials=creds)
-        auth_status = "✅ Drive Συνδεδεμένο"
+        
+        # Test Call
+        drive_service.files().list(pageSize=1).execute()
+        auth_status = "✅ Σύνδεση Επιτυχής"
     else:
-        auth_status = "⚠️ Χωρίς Drive"
-except Exception as e:
-    auth_status = "⚠️ Drive Error"
+        auth_status = "⚠️ Λείπει το Drive Key"
 
-# --- SIDEBAR (ΡΥΘΜΙΣΕΙΣ) ---
+except Exception as e:
+    auth_status = f"⚠️ Drive Status: {str(e)}"
+
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Ρυθμίσεις")
-    st.info(auth_status)
+    st.title("⚙️ Ρυθμίσεις")
+    if "✅" in auth_status:
+        st.success(auth_status)
+    else:
+        st.warning(auth_status)
     
     st.divider()
-    # ΕΔΩ ΟΙ ΕΠΙΛΟΓΕΣ ΜΟΝΤΕΛΩΝ (Σταθερά)
-    model_option = st.selectbox(
-        "Μοντέλο AI", 
-        ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
-    )
+    # Χρησιμοποιούμε ονόματα που υπάρχουν σίγουρα
+    model_option = st.selectbox("Μοντέλο", ["gemini-1.5-flash", "gemini-1.5-pro"])
     
-    st.divider()
-    if st.button("🗑️ Νέα Συζήτηση (Καθαρισμός)", type="primary"):
+    if st.button("🗑️ Καθαρισμός Chat"):
         st.session_state.messages = []
         st.rerun()
 
-# --- HEADER & MODES ---
-st.title("🎛️ HVAC Controller 2.0")
-
-# Επιλογή Ειδικότητας (Context)
-c1, c2, c3 = st.columns(3)
-if "tech_mode" not in st.session_state: st.session_state.tech_mode = "Τεχνικός HVAC"
-
-if c1.button("❄️ AC"): st.session_state.tech_mode = "Τεχνικός Κλιματισμού"
-if c2.button("🧊 Ψύξη"): st.session_state.tech_mode = "Ψυκτικός"
-if c3.button("🔥 Αέριο"): st.session_state.tech_mode = "Τεχνικός Καυστήρων"
-
-st.caption(f"Ειδικότητα: **{st.session_state.tech_mode}**")
-
-# --- ΕΠΙΛΟΓΕΑΣ ΠΗΓΗΣ ΑΝΑΖΗΤΗΣΗΣ ---
-search_source = st.radio(
-    "🔎 Πού να ψάξω;",
-    ["🧠 Υβριδικό (Smart)", "📂 Μόνο Αρχεία", "🌐 Μόνο Γενική Γνώση"],
-    horizontal=True,
-    help="Υβριδικό: Ψάχνει Drive και συμπληρώνει. Μόνο Αρχεία: Αυστηρά από manuals."
-)
+# --- HEADER ---
+st.title("🔧 HVAC Master")
 
 # --- FUNCTIONS ---
 def list_drive_files():
     if not drive_service: return []
     try:
         q = "mimeType != 'application/vnd.google-apps.folder' and trashed = false"
-        res = drive_service.files().list(q=q, fields="files(id, name)", pageSize=50).execute()
+        res = drive_service.files().list(q=q, fields="files(id, name, mimeType)", pageSize=20).execute()
         return res.get('files', [])
     except: return []
 
-def download_file_content(file_id):
+def download_drive_file(file_id):
     req = drive_service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, req)
     done = False
-    while done is False: _, done = downloader.next_chunk()
-    return fh.getvalue()
+    while done is False: status, done = downloader.next_chunk()
+    fh.seek(0)
+    return fh
 
-def find_relevant_file(user_query, files):
-    """Απλή λογική για να βρει το σωστό αρχείο βάσει ονόματος"""
-    user_query = user_query.lower()
-    for f in files:
-        fname = f['name'].lower()
-        # Αν το όνομα του αρχείου περιέχει λέξεις από την ερώτηση (π.χ. 'ariston', 'error')
-        if any(word in fname for word in user_query.split() if len(word) > 3):
-            return f
-    return None
-
-# --- CHAT UI ---
+# --- UI LOGIC ---
 if "messages" not in st.session_state: st.session_state.messages = []
+
+# Mode
+c1, c2, c3 = st.columns(3)
+if c1.button("❄️ AC", use_container_width=True): st.session_state.mode = "Τεχνικός Κλιματισμού"
+if c2.button("🧊 Ψύξη", use_container_width=True): st.session_state.mode = "Ψυκτικός"
+if c3.button("🔥 Αέριο", use_container_width=True): st.session_state.mode = "Τεχνικός Καυστήρων"
+if "mode" not in st.session_state: st.session_state.mode = "Τεχνικός HVAC"
+st.caption(f"Ειδικότητα: **{st.session_state.mode}**")
+
+# Tabs
+tab1, tab2 = st.tabs(["📸 Live", "☁️ Drive"])
+
+with tab1:
+    use_cam = st.checkbox("Κάμερα")
+    cam_img = st.camera_input("Λήψη") if use_cam else None
+
+with tab2:
+    if drive_service:
+        if st.button("🔄 Φόρτωση Drive"):
+            with st.spinner("Σάρωση..."):
+                st.session_state.files = list_drive_files()
+        
+        sel_file = None
+        if "files" in st.session_state and st.session_state.files:
+            opts = {f['name']: f['id'] for f in st.session_state.files}
+            s = st.selectbox("Αρχείο:", ["--"] + list(opts.keys()))
+            if s != "--": sel_file = {"id": opts[s], "name": s}
+    else:
+        st.info("Το Drive δεν είναι συνδεδεμένο.")
+
+# --- CHAT ---
 for m in st.session_state.messages:
     with st.chat_message(m["role"]): st.markdown(m["content"])
 
-# --- INPUT ---
-prompt = st.chat_input("Γράψε βλάβη, κωδικό ή μάρκα...")
+prompt = st.chat_input("Ερώτηση...")
 
 if prompt:
-    # 1. User
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
-    # 2. Logic Controller
-    with st.chat_message("assistant"):
-        media_content = []
-        found_file_name = None
-        
-        # Λογική Drive
-        if ("Αρχεία" in search_source or "Υβριδικό" in search_source) and drive_service:
-            with st.spinner("🕵️ Ψάχνω στα manuals..."):
-                all_files = list_drive_files()
-                target_file = find_relevant_file(prompt, all_files)
+    media = []
+    
+    if cam_img: media.append(Image.open(cam_img))
+    
+    if sel_file:
+        with st.spinner(f"📥 Μελετάω το {sel_file['name']}..."):
+            try:
+                stream = download_drive_file(sel_file['id'])
+                suffix = ".pdf" if "pdf" in sel_file['name'].lower() else ".jpg"
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(stream.getvalue())
+                    path = tmp.name
                 
-                if target_file:
-                    st.toast(f"📖 Βρέθηκε: {target_file['name']}")
-                    found_file_name = target_file['name']
-                    
-                    # Download & Upload to Gemini
-                    file_data = download_file_content(target_file['id'])
-                    suffix = ".pdf" if "pdf" in target_file['name'].lower() else ".jpg"
-                    
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                        tmp.write(file_data)
-                        tmp_path = tmp.name
-                    
-                    gfile = genai.upload_file(tmp_path)
-                    while gfile.state.name == "PROCESSING": time.sleep(0.5); gfile = genai.get_file(gfile.name)
-                    media_content.append(gfile)
-                else:
-                    if "Μόνο Αρχεία" in search_source:
-                        st.warning("Δεν βρέθηκε σχετικό manual για αυτή τη βλάβη.")
+                gfile = genai.upload_file(path)
+                while gfile.state.name == "PROCESSING":
+                    time.sleep(1)
+                    gfile = genai.get_file(gfile.name)
+                media.append(gfile)
+            except Exception as e:
+                st.error(f"Error file: {e}")
 
-        # 3. AI Generation
-        # Αν έχουμε αρχείο ή αν επιτρέπεται η γενική γνώση
-        if media_content or "Γενική" in search_source or ("Υβριδικό" in search_source):
+    # AI Reply
+    with st.chat_message("assistant"):
+        with st.spinner("🧠 Ανάλυση..."):
             try:
                 model = genai.GenerativeModel(model_option)
-                
-                source_instruction = ""
-                if found_file_name:
-                    source_instruction = f"Βασίσου στο αρχείο '{found_file_name}' που σου δίνω."
-                elif "Μόνο Αρχεία" in search_source:
-                    source_instruction = "Απάντησε ΜΟΝΟ αν βρεις την πληροφορία στα αρχεία. Αλλιώς πες 'Δεν γνωρίζω'."
-
-                full_prompt = f"""
-                Είσαι {st.session_state.tech_mode}. Μίλα Ελληνικά.
-                {source_instruction}
-                Στο τέλος, γράψε: 'Πηγή: [Όνομα Αρχείου ή Γενική Γνώση]'.
-                Ερώτηση: {prompt}
-                """
-                
-                # --- Η ΔΙΟΡΘΩΣΗ ΓΙΑ ΤΑ "ΚΙΝΕΖΙΚΑ" ---
-                with st.spinner("🧠 Ανάλυση..."):
-                    # Ζητάμε την απάντηση κανονικά (όχι stream) για να πάρουμε καθαρό κείμενο
-                    response = model.generate_content([full_prompt, *media_content])
-                    
-                    # Παίρνουμε ΜΟΝΟ το κείμενο (.text)
-                    final_text = response.text
-                    
-                    # Το εμφανίζουμε σωστά
-                    st.markdown(final_text)
-                    st.session_state.messages.append({"role": "assistant", "content": final_text})
-                
+                response = model.generate_content(
+                    [f"Είσαι {st.session_state.mode}. Απάντησε στα Ελληνικά.\nΕρώτηση: {prompt}", *media]
+                )
+                st.markdown(response.text)
+                st.session_state.messages.append({"role": "assistant", "content": response.text})
             except Exception as e:
-                st.error(f"Σφάλμα AI: {e}")
+                st.error(f"Σφάλμα AI: {str(e)}")
