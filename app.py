@@ -11,13 +11,15 @@ import os
 import time
 
 # --- SETUP ---
-st.set_page_config(page_title="HVAC Auto-Pilot", page_icon="🚀", layout="centered")
+st.set_page_config(page_title="HVAC Ultimate", page_icon="🎛️", layout="centered")
 
-# CSS
+# CSS (Dark Mode & Clean Look)
 st.markdown("""<style>
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} .stDeployButton {display:none;}
     div[data-testid="stCameraInput"] button {background-color: #ef4444; color: white;}
     .stChatMessage { border-radius: 12px; }
+    /* Κάνουμε τα μηνύματα του AI πιο διακριτά */
+    div[data-testid="stChatMessage"]:nth-child(even) { background-color: #1e293b; }
 </style>""", unsafe_allow_html=True)
 
 # --- ΣΥΝΔΕΣΗ (ROBUST AUTH) ---
@@ -39,28 +41,45 @@ try:
         )
         drive_service = build('drive', 'v3', credentials=creds)
         drive_service.files().list(pageSize=1).execute()
-        auth_status = "✅ Σύστημα Έτοιμο"
+        auth_status = "✅ Όλα Συνδεδεμένα"
     else:
         auth_status = "⚠️ Λείπει το Drive Key"
 except Exception as e:
     auth_status = f"⚠️ Status: {str(e)}"
 
-# --- SIDEBAR ---
+# --- SIDEBAR (ΡΥΘΜΙΣΕΙΣ) ---
 with st.sidebar:
-    st.title("⚙️ Auto-Pilot")
+    st.title("🎛️ Κέντρο Ελέγχου")
     if "✅" in auth_status:
         st.success(auth_status)
     else:
         st.warning(auth_status)
     
     st.divider()
-    st.info("🤖 Το σύστημα επιλέγει αυτόματα το καλύτερο μοντέλο.")
-    if st.button("🗑️ Καθαρισμός"):
+    
+    # 1. ΕΠΙΛΟΓΗ ΠΗΓΗΣ ΓΝΩΣΗΣ
+    st.subheader("🔍 Πού να ψάξω;")
+    search_mode = st.radio(
+        "Πηγή Δεδομένων:",
+        ["🧠 Συνδυασμός (Smart)", "📚 Μόνο Manuals (Drive)", "🌐 Γενική Γνώση (AI)"],
+        index=0,
+        help="Επίλεξε πού θα βασιστεί η απάντηση."
+    )
+    
+    st.divider()
+    
+    # 2. ΕΠΙΛΟΓΗ ΜΟΝΤΕΛΟΥ (Χειροκίνητη ή Αυτόματη)
+    use_autopilot = st.toggle("🤖 Αυτόματη Επιλογή Μοντέλου", value=True)
+    if not use_autopilot:
+        model_option = st.selectbox("Επίλεξε Μοντέλο", ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"])
+    
+    st.divider()
+    if st.button("🗑️ Νέα Συζήτηση"):
         st.session_state.messages = []
         st.rerun()
 
 # --- HEADER ---
-st.title("🚀 HVAC Auto-Pilot")
+st.title("🎛️ HVAC Ultimate Control")
 
 # --- FUNCTIONS ---
 def list_drive_files():
@@ -80,25 +99,23 @@ def download_drive_file(file_id):
     fh.seek(0)
     return fh
 
-# --- SMART MODEL SELECTOR ---
-def generate_smart_response(prompt_content):
-    # Λίστα προτεραιότητας μοντέλων
-    models_to_try = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
-    
-    for model_name in models_to_try:
-        try:
-            # Δοκιμή μοντέλου
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt_content)
-            return response.text, model_name # Επιστροφή απάντησης ΚΑΙ ονόματος μοντέλου
-        except Exception as e:
-            # Αν αποτύχει, προχωράμε στο επόμενο
-            continue
-    
-    # Αν αποτύχουν όλα
-    raise Exception("Όλα τα μοντέλα είναι απασχολημένα. Δοκίμασε σε λίγο.")
+# --- SMART MODEL LOGIC ---
+def generate_response(prompt_content, forced_model=None):
+    # Αν ο χρήστης διάλεξε μοντέλο χειροκίνητα
+    if forced_model:
+        model = genai.GenerativeModel(forced_model)
+        return model.generate_content(prompt_content).text, forced_model
 
-# --- UI ---
+    # Αλλιώς Αυτόματος Πιλότος (σειρά προτεραιότητας)
+    models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
+    for m in models:
+        try:
+            model = genai.GenerativeModel(m)
+            return model.generate_content(prompt_content).text, m
+        except: continue
+    raise Exception("Busy")
+
+# --- UI STATE ---
 if "messages" not in st.session_state: st.session_state.messages = []
 
 # Ειδικότητα
@@ -118,9 +135,11 @@ with tab1:
 
 with tab2:
     if drive_service:
-        if st.button("🔄 Φόρτωση Drive"):
-            with st.spinner("Σάρωση..."):
-                st.session_state.files = list_drive_files()
+        # Φορτώνουμε λίστα μόνο αν ζητηθεί για να μην αργεί
+        if "files" not in st.session_state:
+             if st.button("🔄 Φόρτωση Λίστας Drive"):
+                with st.spinner("Σάρωση..."):
+                    st.session_state.files = list_drive_files()
         
         sel_file = None
         if "files" in st.session_state and st.session_state.files:
@@ -139,13 +158,12 @@ if prompt:
     with st.chat_message("user"): st.markdown(prompt)
 
     media = []
-    
     # 1. Camera
     if cam_img: media.append(Image.open(cam_img))
     
-    # 2. Drive File
-    if sel_file:
-        with st.spinner(f"📥 Κατεβάζω {sel_file['name']}..."):
+    # 2. Drive File (Μόνο αν ΔΕΝ είναι "Γενική Γνώση")
+    if "Γενική Γνώση" not in search_mode and sel_file:
+        with st.spinner(f"📥 Μελέτη {sel_file['name']}..."):
             try:
                 stream = download_drive_file(sel_file['id'])
                 suffix = ".pdf" if "pdf" in sel_file['name'].lower() else ".jpg"
@@ -159,18 +177,37 @@ if prompt:
             except Exception as e:
                 st.error(f"Error file: {e}")
 
-    # 3. AI Reply (SMART MODE)
+    # 3. Δημιουργία System Prompt (Ευγένεια & Έλεγχος)
+    system_instruction = f"""
+    Είσαι ένας εξαιρετικά ευγενικός και έμπειρος {st.session_state.mode}.
+    Μιλάς πάντα στον πληθυντικό ευγενείας ή φιλικά αλλά με σεβασμό.
+    
+    ΟΔΗΓΙΕΣ ΣΥΜΠΕΡΙΦΟΡΑΣ:
+    1. Αν ο χρήστης σε διορθώσει, ζήτα συγγνώμη αμέσως και διόρθωσε την απάντησή σου. Μην επιμένεις.
+    2. Αν δεν ξέρεις κάτι, πες το ειλικρινά και ευγενικά.
+    3. Απάντα στα Ελληνικά.
+    
+    ΟΔΗΓΙΕΣ ΑΝΑΖΗΤΗΣΗΣ ({search_mode}):
+    """
+    
+    if "Μόνο Manuals" in search_mode:
+        system_instruction += "\n- ΑΠΑΝΤΑ ΜΟΝΟ βάσει των αρχείων που σου δόθηκαν. Αν η απάντηση δεν είναι στα αρχεία, πες 'Δυστυχώς δεν το βρίσκω στα εγχειρίδια'."
+    elif "Γενική Γνώση" in search_mode:
+        system_instruction += "\n- Χρησιμοποίησε ΜΟΝΟ τις γενικές σου γνώσεις. Μην αναζητάς σε αρχεία."
+    else: # Συνδυασμός
+        system_instruction += "\n- Συνδύασε πληροφορίες από τα αρχεία και τις γνώσεις σου για την καλύτερη λύση."
+
+    # 4. Generate Answer
     with st.chat_message("assistant"):
-        with st.spinner("🧠 Ο Αυτόματος Πιλότος σκέφτεται..."):
+        with st.spinner("🧠 Επεξεργασία..."):
             try:
-                # Καλούμε την έξυπνη συνάρτηση
-                msg_content = [f"Είσαι {st.session_state.mode}. Απάντησε στα Ελληνικά.\nΕρώτηση: {prompt}", *media]
-                reply_text, used_model = generate_smart_response(msg_content)
+                # Επιλογή μοντέλου (Auto ή Manual)
+                forced = None if use_autopilot else model_option
                 
-                # Εμφάνιση απάντησης και ποιο μοντέλο χρησιμοποιήθηκε (με μικρά γράμματα)
-                st.markdown(reply_text)
-                st.caption(f"⚡ Απαντήθηκε από: {used_model}")
+                reply, model_used = generate_response([f"{system_instruction}\nΕρώτηση: {prompt}", *media], forced)
                 
-                st.session_state.messages.append({"role": "assistant", "content": reply_text})
+                st.markdown(reply)
+                st.caption(f"🔧 {model_used} | 📂 {search_mode}")
+                st.session_state.messages.append({"role": "assistant", "content": reply})
             except Exception as e:
-                st.error(f"⚠️ Σφάλμα: {str(e)}")
+                st.error(f"Σφάλμα: {str(e)}")
