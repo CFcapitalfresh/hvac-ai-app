@@ -13,7 +13,7 @@ import time
 # --- SETUP ---
 st.set_page_config(page_title="HVAC Master", page_icon="🔧", layout="centered")
 
-# CSS
+# CSS (Απόκρυψη περιττών στοιχείων)
 st.markdown("""<style>
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} .stDeployButton {display:none;}
     div[data-testid="stCameraInput"] button {background-color: #ef4444; color: white;}
@@ -25,20 +25,17 @@ auth_status = "⏳ Σύνδεση..."
 drive_service = None
 
 try:
-    # 1. Gemini
+    # 1. Gemini Key
     if "GEMINI_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
     
-    # 2. Drive
+    # 2. Drive Key
     if "GCP_SERVICE_ACCOUNT" in st.secrets:
         gcp_raw = st.secrets["GCP_SERVICE_ACCOUNT"]
-        # Καθαρισμός string
         gcp_raw = gcp_raw.strip()
         if gcp_raw.startswith("'") and gcp_raw.endswith("'"): gcp_raw = gcp_raw[1:-1]
         
         info = json.loads(gcp_raw)
-        
-        # Key Fix
         if "private_key" in info:
             info["private_key"] = info["private_key"].replace("\\n", "\n")
             
@@ -56,7 +53,7 @@ try:
 except Exception as e:
     auth_status = f"⚠️ Status: {str(e)}"
 
-# --- SIDEBAR ---
+# --- SIDEBAR (ΡΥΘΜΙΣΕΙΣ) ---
 with st.sidebar:
     st.title("⚙️ Ρυθμίσεις")
     if "✅" in auth_status:
@@ -65,8 +62,21 @@ with st.sidebar:
         st.warning(auth_status)
     
     st.divider()
-    # Προεπιλογή το 1.5 Flash που είναι πιο σταθερό
-    model_option = st.selectbox("Μοντέλο", ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"])
+    
+    # --- ΝΕΟ ΜΕΝΟΥ ΕΠΙΛΟΓΗΣ ΜΟΝΤΕΛΟΥ ---
+    st.markdown("### 🧠 Επίλεξε Μυαλό:")
+    
+    # Λεξικό με φιλικά ονόματα για εσένα
+    model_map = {
+        "🚀 Flash 2.0 (Πιο Γρήγορο)": "gemini-2.0-flash",
+        "🧠 Pro 1.5 (Πιο Έξυπνο / Για PDF)": "gemini-1.5-pro",
+        "🛡️ Flash 1.5 (Σταθερό)": "gemini-1.5-flash"
+    }
+    
+    selected_label = st.radio("Διάλεξε:", list(model_map.keys()))
+    model_option = model_map[selected_label] # Αυτό παίρνει τον πραγματικό κωδικό
+    
+    st.divider()
     if st.button("🗑️ Καθαρισμός Chat"):
         st.session_state.messages = []
         st.rerun()
@@ -150,7 +160,7 @@ if prompt:
                 # Upload to Gemini
                 gfile = genai.upload_file(path)
                 
-                # Wait for processing if needed
+                # Wait for processing
                 while gfile.state.name == "PROCESSING":
                     time.sleep(1)
                     gfile = genai.get_file(gfile.name)
@@ -165,7 +175,7 @@ if prompt:
             try:
                 model = genai.GenerativeModel(model_option)
                 
-                # Αυστηρή δομή μηνύματος για να μην μπερδεύεται
+                # Αυστηρή δομή μηνύματος
                 response = model.generate_content(
                     [f"Είσαι {st.session_state.mode}. Απάντησε αναλυτικά στα Ελληνικά.\nΕρώτηση: {prompt}", *media]
                 )
@@ -173,4 +183,4 @@ if prompt:
                 st.markdown(response.text)
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
             except Exception as e:
-                st.error("⚠️ Το AI δεν μπόρεσε να απαντήσει. Δοκίμασε άλλο μοντέλο (1.5).")
+                st.error("⚠️ Το AI δεν μπόρεσε να απαντήσει. Δοκίμασε να αλλάξεις μοντέλο σε Pro.")
