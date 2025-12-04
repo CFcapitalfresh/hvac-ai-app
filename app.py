@@ -19,20 +19,23 @@ st.markdown("""<style>
     .stChatMessage { border-radius: 12px; }
 </style>""", unsafe_allow_html=True)
 
-# --- AUTHENTICATION (ΑΥΤΟΜΑΤΗ ΣΥΝΔΕΣΗ ME FIX) ---
+# --- AUTHENTICATION (ΜΕ ΑΥΤΟΜΑΤΗ ΔΙΟΡΘΩΣΗ ΚΛΕΙΔΙΟΥ) ---
 try:
     # 1. Gemini Auth
     api_key = st.secrets["GEMINI_KEY"]
     genai.configure(api_key=api_key)
     
     # 2. Google Drive Auth
-    # Διαβάζουμε το string από τα secrets
+    # Φόρτωση του JSON string
     service_account_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
     
-    # --- ΤΟ FIX ΓΙΑ ΤΟ INVALID JWT ---
-    # Διορθώνουμε τα "enter" (\n) μέσα στο private_key που χαλάνε στην αντιγραφή
+    # *** ΤΟ ΜΥΣΤΙΚΟ FIX ***
+    # Ελέγχουμε και διορθώνουμε το private_key για να μην βγάζει Invalid JWT
     if "private_key" in service_account_info:
-        service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
+        private_key = service_account_info["private_key"]
+        # Αντικαθιστούμε τα literal \n με πραγματικά enter αν έχουν χαλάσει
+        if "\\n" in private_key:
+            service_account_info["private_key"] = private_key.replace("\\n", "\n")
 
     creds = service_account.Credentials.from_service_account_info(
         service_account_info, scopes=['https://www.googleapis.com/auth/drive.readonly']
@@ -40,11 +43,12 @@ try:
     drive_service = build('drive', 'v3', credentials=creds)
     
     auth_status = "✅ Όλα Συνδεδεμένα (Drive & AI)"
-    st.toast("Συνδέθηκε στο Google Drive!", icon="☁️")
+    # Δοκιμαστική κλήση για να δούμε αν δουλεύει ΤΩΡΑ
+    drive_service.files().list(pageSize=1).execute()
 
 except Exception as e:
     auth_status = f"⚠️ Σφάλμα Σύνδεσης: {str(e)}"
-    st.error("Πρόβλημα στα κλειδιά (Secrets). Έλεγξε την αντιγραφή.")
+    st.error(f"Πρόβλημα στα Secrets. Λεπτομέρειες: {e}")
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -113,13 +117,16 @@ with tab2:
         st.session_state.drive_files = []
 
     if st.button("🔄 Φόρτωση Αρχείων Drive"):
-        with st.spinner("Ψάχνω στο Drive..."):
-            files = list_drive_files()
-            if files:
-                st.session_state.drive_files = files
-                st.success(f"Βρέθηκαν {len(files)} αρχεία!")
-            else:
-                st.warning("Ο φάκελος φαίνεται άδειος ή δεν έχει κοινοποιηθεί σωστά.")
+        if "✅" in auth_status:
+            with st.spinner("Ψάχνω στο Drive..."):
+                files = list_drive_files()
+                if files:
+                    st.session_state.drive_files = files
+                    st.success(f"Βρέθηκαν {len(files)} αρχεία!")
+                else:
+                    st.warning("Ο φάκελος φαίνεται άδειος ή δεν έχει κοινοποιηθεί σωστά.")
+        else:
+            st.error("Δεν υπάρχει σύνδεση με το Drive.")
     
     selected_drive_file = None
     if st.session_state.drive_files:
