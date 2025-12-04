@@ -27,7 +27,7 @@ auth_status = "⏳ ..."
 drive_service = None
 
 try:
-    # 1. Gemini Auth (Με τα νέα μοντέλα)
+    # 1. Gemini Auth
     if "GEMINI_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
     
@@ -55,10 +55,10 @@ with st.sidebar:
     st.info(auth_status)
     
     st.divider()
-    # ΕΔΩ ΟΙ ΝΕΕΣ ΕΠΙΛΟΓΕΣ ΜΟΝΤΕΛΩΝ (2.0+)
+    # ΕΔΩ ΟΙ ΕΠΙΛΟΓΕΣ ΜΟΝΤΕΛΩΝ (Σταθερά)
     model_option = st.selectbox(
         "Μοντέλο AI", 
-        ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.0-pro-exp"]
+        ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
     )
     
     st.divider()
@@ -168,7 +168,7 @@ if prompt:
                     source_instruction = f"Βασίσου στο αρχείο '{found_file_name}' που σου δίνω."
                 elif "Μόνο Αρχεία" in search_source:
                     source_instruction = "Απάντησε ΜΟΝΟ αν βρεις την πληροφορία στα αρχεία. Αλλιώς πες 'Δεν γνωρίζω'."
-                
+
                 full_prompt = f"""
                 Είσαι {st.session_state.tech_mode}. Μίλα Ελληνικά.
                 {source_instruction}
@@ -176,10 +176,17 @@ if prompt:
                 Ερώτηση: {prompt}
                 """
                 
-                # Streaming Response
-                stream = model.generate_content([full_prompt, *media_content], stream=True)
-                response = st.write_stream(stream)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+                # --- Η ΔΙΟΡΘΩΣΗ ΓΙΑ ΤΑ "ΚΙΝΕΖΙΚΑ" ---
+                with st.spinner("🧠 Ανάλυση..."):
+                    # Ζητάμε την απάντηση κανονικά (όχι stream) για να πάρουμε καθαρό κείμενο
+                    response = model.generate_content([full_prompt, *media_content])
+                    
+                    # Παίρνουμε ΜΟΝΟ το κείμενο (.text)
+                    final_text = response.text
+                    
+                    # Το εμφανίζουμε σωστά
+                    st.markdown(final_text)
+                    st.session_state.messages.append({"role": "assistant", "content": final_text})
                 
             except Exception as e:
                 st.error(f"Σφάλμα AI: {e}")
