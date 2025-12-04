@@ -11,18 +11,17 @@ import os
 import time
 
 # --- SETUP ---
-st.set_page_config(page_title="HVAC Ultimate", page_icon="🎛️", layout="centered")
+st.set_page_config(page_title="HVAC Memory", page_icon="🧠", layout="centered")
 
-# CSS (Dark Mode & Clean Look)
+# CSS
 st.markdown("""<style>
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} .stDeployButton {display:none;}
     div[data-testid="stCameraInput"] button {background-color: #ef4444; color: white;}
     .stChatMessage { border-radius: 12px; }
-    /* Κάνουμε τα μηνύματα του AI πιο διακριτά */
     div[data-testid="stChatMessage"]:nth-child(even) { background-color: #1e293b; }
 </style>""", unsafe_allow_html=True)
 
-# --- ΣΥΝΔΕΣΗ (ROBUST AUTH) ---
+# --- ΣΥΝΔΕΣΗ ---
 auth_status = "⏳ Σύνδεση..."
 drive_service = None
 
@@ -47,39 +46,29 @@ try:
 except Exception as e:
     auth_status = f"⚠️ Status: {str(e)}"
 
-# --- SIDEBAR (ΡΥΘΜΙΣΕΙΣ) ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.title("🎛️ Κέντρο Ελέγχου")
+    st.title("🎛️ Ρυθμίσεις")
     if "✅" in auth_status:
         st.success(auth_status)
     else:
         st.warning(auth_status)
     
     st.divider()
-    
-    # 1. ΕΠΙΛΟΓΗ ΠΗΓΗΣ ΓΝΩΣΗΣ
-    st.subheader("🔍 Πού να ψάξω;")
+    st.subheader("🔍 Πηγή & Μνήμη")
     search_mode = st.radio(
-        "Πηγή Δεδομένων:",
-        ["🧠 Συνδυασμός (Smart)", "📚 Μόνο Manuals (Drive)", "🌐 Γενική Γνώση (AI)"],
-        index=0,
-        help="Επίλεξε πού θα βασιστεί η απάντηση."
+        "Λειτουργία:",
+        ["🧠 Συνδυασμός (Smart)", "📚 Μόνο Manuals", "🌐 Γενική Γνώση"],
+        index=0
     )
     
     st.divider()
-    
-    # 2. ΕΠΙΛΟΓΗ ΜΟΝΤΕΛΟΥ (Χειροκίνητη ή Αυτόματη)
-    use_autopilot = st.toggle("🤖 Αυτόματη Επιλογή Μοντέλου", value=True)
-    if not use_autopilot:
-        model_option = st.selectbox("Επίλεξε Μοντέλο", ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"])
-    
-    st.divider()
-    if st.button("🗑️ Νέα Συζήτηση"):
+    if st.button("🗑️ Νέα Συζήτηση (Reset)"):
         st.session_state.messages = []
         st.rerun()
 
 # --- HEADER ---
-st.title("🎛️ HVAC Ultimate Control")
+st.title("🧠 HVAC Smart Memory")
 
 # --- FUNCTIONS ---
 def list_drive_files():
@@ -99,26 +88,10 @@ def download_drive_file(file_id):
     fh.seek(0)
     return fh
 
-# --- SMART MODEL LOGIC ---
-def generate_response(prompt_content, forced_model=None):
-    # Αν ο χρήστης διάλεξε μοντέλο χειροκίνητα
-    if forced_model:
-        model = genai.GenerativeModel(forced_model)
-        return model.generate_content(prompt_content).text, forced_model
-
-    # Αλλιώς Αυτόματος Πιλότος (σειρά προτεραιότητας)
-    models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
-    for m in models:
-        try:
-            model = genai.GenerativeModel(m)
-            return model.generate_content(prompt_content).text, m
-        except: continue
-    raise Exception("Busy")
-
-# --- UI STATE ---
+# --- UI ---
 if "messages" not in st.session_state: st.session_state.messages = []
 
-# Ειδικότητα
+# Mode
 c1, c2, c3 = st.columns(3)
 if c1.button("❄️ AC", use_container_width=True): st.session_state.mode = "Τεχνικός Κλιματισμού"
 if c2.button("🧊 Ψύξη", use_container_width=True): st.session_state.mode = "Ψυκτικός"
@@ -135,9 +108,8 @@ with tab1:
 
 with tab2:
     if drive_service:
-        # Φορτώνουμε λίστα μόνο αν ζητηθεί για να μην αργεί
         if "files" not in st.session_state:
-             if st.button("🔄 Φόρτωση Λίστας Drive"):
+             if st.button("🔄 Φόρτωση Λίστας"):
                 with st.spinner("Σάρωση..."):
                     st.session_state.files = list_drive_files()
         
@@ -154,19 +126,23 @@ for m in st.session_state.messages:
 prompt = st.chat_input("Ερώτηση...")
 
 if prompt:
+    # 1. Προσθήκη μηνύματος χρήστη
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
     media = []
-    # 1. Camera
+    # Εικόνα
     if cam_img: media.append(Image.open(cam_img))
     
-    # 2. Drive File (Μόνο αν ΔΕΝ είναι "Γενική Γνώση")
+    # Αρχείο Drive
+    file_context = ""
     if "Γενική Γνώση" not in search_mode and sel_file:
         with st.spinner(f"📥 Μελέτη {sel_file['name']}..."):
             try:
                 stream = download_drive_file(sel_file['id'])
                 suffix = ".pdf" if "pdf" in sel_file['name'].lower() else ".jpg"
+                
+                # Αποθήκευση & Upload
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(stream.getvalue())
                     path = tmp.name
@@ -174,40 +150,40 @@ if prompt:
                 gfile = genai.upload_file(path)
                 while gfile.state.name == "PROCESSING": time.sleep(1); gfile = genai.get_file(gfile.name)
                 media.append(gfile)
+                file_context = f"(Ο χρήστης έχει φορτώσει το αρχείο: {sel_file['name']})"
             except Exception as e:
                 st.error(f"Error file: {e}")
 
-    # 3. Δημιουργία System Prompt (Ευγένεια & Έλεγχος)
-    system_instruction = f"""
-    Είσαι ένας εξαιρετικά ευγενικός και έμπειρος {st.session_state.mode}.
-    Μιλάς πάντα στον πληθυντικό ευγενείας ή φιλικά αλλά με σεβασμό.
-    
-    ΟΔΗΓΙΕΣ ΣΥΜΠΕΡΙΦΟΡΑΣ:
-    1. Αν ο χρήστης σε διορθώσει, ζήτα συγγνώμη αμέσως και διόρθωσε την απάντησή σου. Μην επιμένεις.
-    2. Αν δεν ξέρεις κάτι, πες το ειλικρινά και ευγενικά.
-    3. Απάντα στα Ελληνικά.
-    
-    ΟΔΗΓΙΕΣ ΑΝΑΖΗΤΗΣΗΣ ({search_mode}):
-    """
-    
-    if "Μόνο Manuals" in search_mode:
-        system_instruction += "\n- ΑΠΑΝΤΑ ΜΟΝΟ βάσει των αρχείων που σου δόθηκαν. Αν η απάντηση δεν είναι στα αρχεία, πες 'Δυστυχώς δεν το βρίσκω στα εγχειρίδια'."
-    elif "Γενική Γνώση" in search_mode:
-        system_instruction += "\n- Χρησιμοποίησε ΜΟΝΟ τις γενικές σου γνώσεις. Μην αναζητάς σε αρχεία."
-    else: # Συνδυασμός
-        system_instruction += "\n- Συνδύασε πληροφορίες από τα αρχεία και τις γνώσεις σου για την καλύτερη λύση."
+    # 2. Κατασκευή Ιστορικού (Μνήμη)
+    # Παίρνουμε τα τελευταία 6 μηνύματα για να μην γεμίζει η μνήμη υπερβολικά
+    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages[-6:]])
 
-    # 4. Generate Answer
+    # 3. Οδηγίες Συστήματος (System Prompt)
+    system_instruction = f"""
+    Είσαι ο {st.session_state.mode}.
+    
+    ΙΣΤΟΡΙΚΟ ΣΥΖΗΤΗΣΗΣ (Θυμήσου τι είπαμε):
+    {history_text}
+    
+    ΟΔΗΓΙΕΣ ΑΠΑΝΤΗΣΗΣ ({search_mode}):
+    1. Πρέπει να αναφέρεις ΡΗΤΑ την πηγή σου σε κάθε πληροφορία.
+    2. Χρησιμοποίησε τις ετικέτες: [Πηγή: Manual] ή [Πηγή: Γνώση AI].
+    3. Αν η πληροφορία υπάρχει στο αρχείο που βλέπεις, δώσε προτεραιότητα σε αυτό.
+    4. Αν σε ρωτήσω "από πού το βρήκες", ανατρέξε στο ιστορικό και πες μου.
+    
+    Απάντα στα Ελληνικά, ευγενικά και τεκμηριωμένα.
+    """
+
+    # 4. Κλήση AI
     with st.chat_message("assistant"):
-        with st.spinner("🧠 Επεξεργασία..."):
+        with st.spinner("🧠 Σκέφτεται (με μνήμη)..."):
             try:
-                # Επιλογή μοντέλου (Auto ή Manual)
-                forced = None if use_autopilot else model_option
+                # Χρησιμοποιούμε το 1.5 Pro για καλύτερη μνήμη/λογική
+                model = genai.GenerativeModel("gemini-1.5-pro")
                 
-                reply, model_used = generate_response([f"{system_instruction}\nΕρώτηση: {prompt}", *media], forced)
+                response = model.generate_content([system_instruction, *media])
                 
-                st.markdown(reply)
-                st.caption(f"🔧 {model_used} | 📂 {search_mode}")
-                st.session_state.messages.append({"role": "assistant", "content": reply})
+                st.markdown(response.text)
+                st.session_state.messages.append({"role": "assistant", "content": response.text})
             except Exception as e:
                 st.error(f"Σφάλμα: {str(e)}")
