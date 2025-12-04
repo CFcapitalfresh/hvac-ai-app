@@ -11,19 +11,18 @@ import os
 import time
 
 # --- ΡΥΘΜΙΣΕΙΣ ΣΕΛΙΔΑΣ ---
-st.set_page_config(page_title="HVAC Controller Pro", page_icon="🎛️", layout="centered")
+st.set_page_config(page_title="HVAC Controller 2.0", page_icon="🎛️", layout="centered")
 
 # --- CSS (Στυλ) ---
 st.markdown("""<style>
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} .stDeployButton {display:none;}
     div[data-testid="stCameraInput"] button {background-color: #ef4444; color: white;}
     .stChatMessage { border-radius: 12px; }
-    /* Έμφαση στο επιλεγμένο mode */
     div.stRadio > label { font-weight: bold; font-size: 16px; color: #60a5fa; }
 </style>""", unsafe_allow_html=True)
 
 # --- ΣΥΝΔΕΣΗ (DRIVE & AI - FIXED) ---
-auth_status = "⏳ Εκκίνηση..."
+auth_status = "⏳ ..."
 drive_service = None
 
 try:
@@ -31,55 +30,47 @@ try:
     if "GEMINI_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
     
-    # 2. Drive Auth (Με το FIX για τα Newlines)
+    # 2. Drive Auth (Με το fix για τα enter)
     if "GCP_SERVICE_ACCOUNT" in st.secrets:
         gcp_raw = st.secrets["GCP_SERVICE_ACCOUNT"].strip()
+        # Καθαρισμός αν έχει μπει με λάθος εισαγωγικά
         if gcp_raw.startswith("'") and gcp_raw.endswith("'"): gcp_raw = gcp_raw[1:-1]
         
         info = json.loads(gcp_raw)
-        
-        # --- ΤΟ FIX ΓΙΑ ΤΟ INVALID JWT ---
-        if "private_key" in info:
+        if "private_key" in info: 
             info["private_key"] = info["private_key"].replace("\\n", "\n")
             
         creds = service_account.Credentials.from_service_account_info(
             info, scopes=['https://www.googleapis.com/auth/drive.readonly']
         )
         drive_service = build('drive', 'v3', credentials=creds)
-        
-        # Test Call
-        drive_service.files().list(pageSize=1).execute()
         auth_status = "✅ Drive Συνδεδεμένο"
     else:
-        auth_status = "⚠️ Χωρίς Drive Key"
-
+        auth_status = "⚠️ Χωρίς Drive"
 except Exception as e:
     auth_status = f"⚠️ Drive Error: {str(e)}"
 
-# --- SIDEBAR (ΡΥΘΜΙΣΕΙΣ) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Ρυθμίσεις")
-    if "✅" in auth_status:
-        st.success(auth_status)
-    else:
-        st.warning(auth_status)
+    st.info(auth_status)
     
     st.divider()
-    # ΣΤΑΘΕΡΑ ΜΟΝΤΕΛΑ (Αποφεύγουμε το experimental 2.0 για τώρα)
+    # ΜΟΝΟ ΤΑ ΝΕΑ ΜΟΝΤΕΛΑ 2.0
     model_option = st.selectbox(
         "Μοντέλο AI", 
-        ["gemini-1.5-flash", "gemini-1.5-pro"]
+        ["gemini-2.0-flash", "gemini-2.0-pro-exp-02-05"]
     )
     
     st.divider()
-    if st.button("🗑️ Νέα Συζήτηση (Καθαρισμός)", type="primary"):
+    if st.button("🗑️ Νέα Συζήτηση", type="primary"):
         st.session_state.messages = []
         st.rerun()
 
 # --- HEADER & MODES ---
-st.title("🎛️ HVAC Controller Pro")
+st.title("🎛️ HVAC Controller 2.0")
 
-# Επιλογή Ειδικότητας (Context)
+# Επιλογή Ειδικότητας
 c1, c2, c3 = st.columns(3)
 if "tech_mode" not in st.session_state: st.session_state.tech_mode = "Τεχνικός HVAC"
 
@@ -89,20 +80,13 @@ if c3.button("🔥 Αέριο"): st.session_state.tech_mode = "Τεχνικός 
 
 st.caption(f"Ειδικότητα: **{st.session_state.tech_mode}**")
 
-# --- MEDIA TABS (Κάμερα & Ρυθμίσεις Αναζήτησης) ---
-tab1, tab2 = st.tabs(["🔎 Ρυθμίσεις Αναζήτησης", "📸 Live Κάμερα"])
-
-with tab1:
-    search_source = st.radio(
-        "Πηγή Δεδομένων:",
-        ["🧠 Υβριδικό (Smart)", "📂 Μόνο Αρχεία", "🌐 Μόνο Γενική Γνώση"],
-        horizontal=True,
-        help="Υβριδικό: Ψάχνει Drive και συμπληρώνει. Μόνο Αρχεία: Αυστηρά από manuals."
-    )
-
-with tab2:
-    use_cam = st.checkbox("Ενεργοποίηση Κάμερας")
-    cam_img = st.camera_input("Λήψη") if use_cam else None
+# --- ΠΗΓΗ ΑΝΑΖΗΤΗΣΗΣ ---
+search_source = st.radio(
+    "🔎 Πού να ψάξω;",
+    ["🧠 Υβριδικό (Smart)", "📂 Μόνο Αρχεία", "🌐 Μόνο Γενική Γνώση"],
+    horizontal=True,
+    help="Υβριδικό: Ψάχνει Drive και συμπληρώνει. Μόνο Αρχεία: Αυστηρά από manuals."
+)
 
 # --- FUNCTIONS ---
 def list_drive_files():
@@ -122,11 +106,11 @@ def download_file_content(file_id):
     return fh.getvalue()
 
 def find_relevant_file(user_query, files):
-    """Απλή λογική για να βρει το σωστό αρχείο βάσει ονόματος"""
+    """Ψάχνει αν υπάρχει manual με βάση το όνομα"""
     user_query = user_query.lower()
     for f in files:
         fname = f['name'].lower()
-        # Αν το όνομα του αρχείου περιέχει σημαντικές λέξεις από την ερώτηση
+        # Αν βρει λέξη κλειδί (πάνω από 3 γράμματα) στο όνομα του αρχείου
         if any(word in fname for word in user_query.split() if len(word) > 3):
             return f
     return None
@@ -137,10 +121,19 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]): st.markdown(m["content"])
 
 # --- INPUT ---
+# Media Upload Tab
+with st.expander("📸 Προσθήκη Φώτο/Βίντεο (Προαιρετικό)"):
+    tab1, tab2 = st.tabs(["📸 Live", "📂 Upload"])
+    with tab1:
+        enable_cam = st.checkbox("Ενεργοποίηση Κάμερας")
+        cam_img = st.camera_input("Λήψη") if enable_cam else None
+    with tab2:
+        upl_file = st.file_uploader("Ανέβασμα", type=['png', 'jpg', 'jpeg', 'pdf'])
+
 prompt = st.chat_input("Γράψε βλάβη, κωδικό ή μάρκα...")
 
 if prompt:
-    # 1. User
+    # 1. User Message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
@@ -149,11 +142,13 @@ if prompt:
         media_content = []
         found_file_name = None
         
-        # A. Κάμερα (Αν υπάρχει)
+        # A. Media processing
         if cam_img:
             media_content.append(Image.open(cam_img))
-        
-        # B. Λογική Drive (Αν είναι ενεργό)
+        if upl_file:
+             media_content.append(Image.open(upl_file) if "image" in upl_file.type else upl_file)
+
+        # B. Drive Logic
         if ("Αρχεία" in search_source or "Υβριδικό" in search_source) and drive_service:
             with st.spinner("🕵️ Ψάχνω στα manuals..."):
                 all_files = list_drive_files()
@@ -163,7 +158,6 @@ if prompt:
                     st.toast(f"📖 Βρέθηκε: {target_file['name']}")
                     found_file_name = target_file['name']
                     
-                    # Download & Upload to Gemini
                     try:
                         file_data = download_file_content(target_file['id'])
                         suffix = ".pdf" if "pdf" in target_file['name'].lower() else ".jpg"
@@ -181,7 +175,7 @@ if prompt:
                         st.error(f"Error reading file: {e}")
                 else:
                     if "Μόνο Αρχεία" in search_source:
-                        st.warning("Δεν βρέθηκε σχετικό manual για αυτή τη βλάβη στο Drive.")
+                        st.warning("Δεν βρέθηκε σχετικό manual στο Drive.")
 
         # 3. AI Generation
         if media_content or "Γενική" in search_source or ("Υβριδικό" in search_source):
@@ -192,7 +186,7 @@ if prompt:
                 if found_file_name:
                     source_instruction = f"Βασίσου στο αρχείο '{found_file_name}' που σου δίνω."
                 elif "Μόνο Αρχεία" in search_source and not found_file_name:
-                    source_instruction = "Δεν βρέθηκε αρχείο. Απάντησε 'Δεν έχω το manual για αυτό'."
+                    source_instruction = "Απάντησε ΜΟΝΟ αν βρεις την πληροφορία στα αρχεία. Αλλιώς πες 'Δεν γνωρίζω'."
                 
                 full_prompt = f"""
                 Είσαι {st.session_state.tech_mode}. Μίλα Ελληνικά.
@@ -200,7 +194,8 @@ if prompt:
                 Ερώτηση: {prompt}
                 """
                 
-                with st.spinner("🧠 Ανάλυση..."):
+                with st.spinner("🧠 Ανάλυση 2.0..."):
+                    # Καθαρή κλήση generate_content
                     response = model.generate_content([full_prompt, *media_content])
                     st.markdown(response.text)
                     st.session_state.messages.append({"role": "assistant", "content": response.text})
