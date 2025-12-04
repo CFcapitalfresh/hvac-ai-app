@@ -19,36 +19,46 @@ st.markdown("""<style>
     .stChatMessage { border-radius: 12px; }
 </style>""", unsafe_allow_html=True)
 
-# --- AUTHENTICATION (ΜΕ ΑΥΤΟΜΑΤΗ ΔΙΟΡΘΩΣΗ ΚΛΕΙΔΙΟΥ) ---
+# --- ΕΞΥΠΝΗ ΣΥΝΔΕΣΗ (AUTO-REPAIR KEY) ---
+auth_status = "⏳ Προσπάθεια σύνδεσης..."
+drive_service = None
+
 try:
     # 1. Gemini Auth
-    api_key = st.secrets["GEMINI_KEY"]
-    genai.configure(api_key=api_key)
-    
-    # 2. Google Drive Auth
-    # Φόρτωση του JSON string
-    service_account_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
-    
-    # *** ΤΟ ΜΥΣΤΙΚΟ FIX ***
-    # Ελέγχουμε και διορθώνουμε το private_key για να μην βγάζει Invalid JWT
-    if "private_key" in service_account_info:
-        private_key = service_account_info["private_key"]
-        # Αντικαθιστούμε τα literal \n με πραγματικά enter αν έχουν χαλάσει
-        if "\\n" in private_key:
-            service_account_info["private_key"] = private_key.replace("\\n", "\n")
+    if "GEMINI_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_KEY"]
+        genai.configure(api_key=api_key)
+    else:
+        st.error("Λείπει το GEMINI_KEY από τα Secrets.")
 
-    creds = service_account.Credentials.from_service_account_info(
-        service_account_info, scopes=['https://www.googleapis.com/auth/drive.readonly']
-    )
-    drive_service = build('drive', 'v3', credentials=creds)
-    
-    auth_status = "✅ Όλα Συνδεδεμένα (Drive & AI)"
-    # Δοκιμαστική κλήση για να δούμε αν δουλεύει ΤΩΡΑ
-    drive_service.files().list(pageSize=1).execute()
+    # 2. Google Drive Auth με "Χειρουργική Επέμβαση" στο κλειδί
+    if "GCP_SERVICE_ACCOUNT" in st.secrets:
+        # Φόρτωση του JSON
+        gcp_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
+        
+        # *** FIX 1: Διόρθωση Private Key ***
+        if "private_key" in gcp_info:
+            pk = gcp_info["private_key"]
+            # Αντικατάσταση των 'σπασμένων' newlines
+            pk = pk.replace("\\n", "\n")
+            gcp_info["private_key"] = pk
+        
+        # *** FIX 2: Διόρθωση Token URI (αν λείπει) ***
+        if "token_uri" not in gcp_info:
+            gcp_info["token_uri"] = "https://oauth2.googleapis.com/token"
+
+        creds = service_account.Credentials.from_service_account_info(
+            gcp_info, scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+        drive_service = build('drive', 'v3', credentials=creds)
+        auth_status = "✅ Επιτυχία: Drive & AI Συνδέθηκαν!"
+        st.toast("Σύνδεση OK!", icon="🟢")
+    else:
+        auth_status = "⚠️ Λείπει το GCP_SERVICE_ACCOUNT από τα Secrets."
 
 except Exception as e:
-    auth_status = f"⚠️ Σφάλμα Σύνδεσης: {str(e)}"
-    st.error(f"Πρόβλημα στα Secrets. Λεπτομέρειες: {e}")
+    auth_status = f"❌ Σφάλμα: {str(e)}"
+    st.error(f"Δεν μπόρεσα να φτιάξω το κλειδί: {e}")
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -57,6 +67,7 @@ with st.sidebar:
         st.success(auth_status)
     else:
         st.error(auth_status)
+        st.info("Συμβουλή: Αν βλέπεις ακόμα Invalid JWT, ξανα-αντέγραψε το JSON στα Secrets προσεκτικά.")
         
     st.divider()
     model_option = st.selectbox("Μοντέλο", ["gemini-2.0-flash", "gemini-1.5-pro"])
@@ -66,7 +77,7 @@ st.title("☁️ HVAC Drive Expert")
 
 # --- DRIVE FUNCTIONS ---
 def list_drive_files():
-    """Βρίσκει τα αρχεία στον φάκελο που μοιράστηκες"""
+    if not drive_service: return []
     try:
         # Ψάχνουμε PDF και Εικόνες (όχι φακέλους)
         query = "mimeType != 'application/vnd.google-apps.folder' and trashed = false"
@@ -77,11 +88,10 @@ def list_drive_files():
         ).execute()
         return results.get('files', [])
     except Exception as e:
-        st.error(f"Δεν βρέθηκαν αρχεία. Έκανες Share τον φάκελο στο email του ρομπότ;\nError: {e}")
+        st.error(f"Drive Error: {e}")
         return []
 
 def download_file_from_drive(file_id):
-    """Κατεβάζει το αρχείο προσωρινά στη μνήμη"""
     request = drive_service.files().get_media(fileId=file_id)
     file_stream = io.BytesIO()
     downloader = MediaIoBaseDownload(file_stream, request)
@@ -103,7 +113,7 @@ if "mode" not in st.session_state: st.session_state.mode = "Τεχνικός HVA
 
 st.caption(f"Ειδικότητα: **{st.session_state.mode}**")
 
-# --- TABS (CAMERA & DRIVE) ---
+# --- TABS ---
 tab1, tab2 = st.tabs(["📸 Live", "☁️ Google Drive"])
 
 with tab1:
@@ -117,25 +127,25 @@ with tab2:
         st.session_state.drive_files = []
 
     if st.button("🔄 Φόρτωση Αρχείων Drive"):
-        if "✅" in auth_status:
-            with st.spinner("Ψάχνω στο Drive..."):
+        if drive_service:
+            with st.spinner("Σάρωση Drive..."):
                 files = list_drive_files()
                 if files:
                     st.session_state.drive_files = files
                     st.success(f"Βρέθηκαν {len(files)} αρχεία!")
                 else:
-                    st.warning("Ο φάκελος φαίνεται άδειος ή δεν έχει κοινοποιηθεί σωστά.")
+                    st.warning("Ο φάκελος φαίνεται άδειος. Σίγουρα έκανες Share στο σωστό email;")
         else:
             st.error("Δεν υπάρχει σύνδεση με το Drive.")
     
     selected_drive_file = None
     if st.session_state.drive_files:
         file_options = {f['name']: f['id'] for f in st.session_state.drive_files}
-        selected_name = st.selectbox("Επίλεξε Manual/Αρχείο:", ["-- Κανένα --"] + list(file_options.keys()))
+        selected_name = st.selectbox("Επίλεξε Αρχείο:", ["-- Κανένα --"] + list(file_options.keys()))
         
         if selected_name != "-- Κανένα --":
             selected_drive_file = {"id": file_options[selected_name], "name": selected_name}
-            st.info(f"Έτοιμο για ανάλυση: {selected_name}")
+            st.info(f"Επιλέχθηκε: {selected_name}")
 
 # --- CHAT ---
 for msg in st.session_state.messages:
@@ -153,13 +163,13 @@ if prompt:
     if enable_cam and camera_img:
         media_items.append(Image.open(camera_img))
     
-    # 2. Από Drive (Download & Send to Gemini)
+    # 2. Από Drive
     if selected_drive_file:
-        with st.spinner(f"📥 Κατεβάζω {selected_drive_file['name']} από το Drive..."):
+        with st.spinner(f"📥 Μελέτη αρχείου {selected_drive_file['name']}..."):
             try:
                 file_stream = download_file_from_drive(selected_drive_file['id'])
                 
-                # Save to temp file for Gemini upload
+                # Save temp
                 suffix = ".pdf" if "pdf" in selected_drive_file['name'].lower() else ".jpg"
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(file_stream.getvalue())
@@ -168,9 +178,8 @@ if prompt:
                 # Upload to Gemini
                 gemini_file = genai.upload_file(tmp_path)
                 media_items.append(gemini_file)
-                st.toast("Το αρχείο ανέβηκε στο AI!")
             except Exception as e:
-                st.error(f"Σφάλμα κατά τη λήψη: {e}")
+                st.error(f"Σφάλμα ανάγνωσης αρχείου: {e}")
 
     # 3. AI Response
     with st.chat_message("assistant"):
