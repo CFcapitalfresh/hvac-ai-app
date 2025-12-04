@@ -11,29 +11,36 @@ import os
 import time
 
 # --- ΡΥΘΜΙΣΕΙΣ ΣΕΛΙΔΑΣ ---
-st.set_page_config(page_title="HVAC Controller 2.0", page_icon="🎛️", layout="centered")
+st.set_page_config(page_title="HVAC Smart", page_icon="🧠", layout="centered")
 
-# --- CSS (Στυλ) ---
+# --- CSS ---
 st.markdown("""<style>
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} .stDeployButton {display:none;}
     div[data-testid="stCameraInput"] button {background-color: #ef4444; color: white;}
     .stChatMessage { border-radius: 12px; }
-    div.stRadio > label { font-weight: bold; font-size: 16px; color: #60a5fa; }
+    /* Πλαίσιο Πηγής */
+    .source-box { 
+        background-color: #d1fae5; 
+        color: #065f46; 
+        padding: 10px; 
+        border-radius: 8px; 
+        font-size: 14px; 
+        font-weight: bold; 
+        margin-bottom: 10px;
+        border: 1px solid #34d399;
+    }
 </style>""", unsafe_allow_html=True)
 
-# --- ΣΥΝΔΕΣΗ (DRIVE & AI - FIXED) ---
+# --- ΣΥΝΔΕΣΗ (DRIVE & AI) ---
 auth_status = "⏳ ..."
 drive_service = None
 
 try:
-    # 1. Gemini Auth
     if "GEMINI_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
     
-    # 2. Drive Auth (Με το fix για τα enter)
     if "GCP_SERVICE_ACCOUNT" in st.secrets:
         gcp_raw = st.secrets["GCP_SERVICE_ACCOUNT"].strip()
-        # Καθαρισμός αν έχει μπει με λάθος εισαγωγικά
         if gcp_raw.startswith("'") and gcp_raw.endswith("'"): gcp_raw = gcp_raw[1:-1]
         
         info = json.loads(gcp_raw)
@@ -54,23 +61,16 @@ except Exception as e:
 with st.sidebar:
     st.header("⚙️ Ρυθμίσεις")
     st.info(auth_status)
-    
     st.divider()
-    # ΜΟΝΟ ΤΑ ΝΕΑ ΜΟΝΤΕΛΑ 2.0
-    model_option = st.selectbox(
-        "Μοντέλο AI", 
-        ["gemini-2.0-flash", "gemini-2.0-pro-exp-02-05"]
-    )
-    
+    model_option = st.selectbox("Μοντέλο AI", ["gemini-2.0-flash", "gemini-2.0-pro-exp-02-05"])
     st.divider()
     if st.button("🗑️ Νέα Συζήτηση", type="primary"):
         st.session_state.messages = []
         st.rerun()
 
 # --- HEADER & MODES ---
-st.title("🎛️ HVAC Controller 2.0")
+st.title("🧠 HVAC Smart Expert")
 
-# Επιλογή Ειδικότητας
 c1, c2, c3 = st.columns(3)
 if "tech_mode" not in st.session_state: st.session_state.tech_mode = "Τεχνικός HVAC"
 
@@ -80,12 +80,11 @@ if c3.button("🔥 Αέριο"): st.session_state.tech_mode = "Τεχνικός 
 
 st.caption(f"Ειδικότητα: **{st.session_state.tech_mode}**")
 
-# --- ΠΗΓΗ ΑΝΑΖΗΤΗΣΗΣ ---
+# --- SEARCH SOURCE ---
 search_source = st.radio(
-    "🔎 Πού να ψάξω;",
+    "🔎 Λειτουργία Αναζήτησης:",
     ["🧠 Υβριδικό (Smart)", "📂 Μόνο Αρχεία", "🌐 Μόνο Γενική Γνώση"],
-    horizontal=True,
-    help="Υβριδικό: Ψάχνει Drive και συμπληρώνει. Μόνο Αρχεία: Αυστηρά από manuals."
+    horizontal=True
 )
 
 # --- FUNCTIONS ---
@@ -106,13 +105,19 @@ def download_file_content(file_id):
     return fh.getvalue()
 
 def find_relevant_file(user_query, files):
-    """Ψάχνει αν υπάρχει manual με βάση το όνομα"""
+    """Αναζήτηση αρχείου με ανοχή στα λάθη"""
     user_query = user_query.lower()
+    best_match = None
+    
+    # 1. Ακριβής αναζήτηση λέξεων (πάνω από 3 γράμματα)
+    keywords = [w for w in user_query.split() if len(w) > 2]
+    
     for f in files:
         fname = f['name'].lower()
-        # Αν βρει λέξη κλειδί (πάνω από 3 γράμματα) στο όνομα του αρχείου
-        if any(word in fname for word in user_query.split() if len(word) > 3):
+        # Αν βρει έστω και μία λέξη κλειδί (π.χ. 'ariston')
+        if any(k in fname for k in keywords):
             return f
+            
     return None
 
 # --- CHAT UI ---
@@ -121,42 +126,36 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]): st.markdown(m["content"])
 
 # --- INPUT ---
-# Media Upload Tab
-with st.expander("📸 Προσθήκη Φώτο/Βίντεο (Προαιρετικό)"):
-    tab1, tab2 = st.tabs(["📸 Live", "📂 Upload"])
-    with tab1:
-        enable_cam = st.checkbox("Ενεργοποίηση Κάμερας")
-        cam_img = st.camera_input("Λήψη") if enable_cam else None
-    with tab2:
-        upl_file = st.file_uploader("Ανέβασμα", type=['png', 'jpg', 'jpeg', 'pdf'])
+with st.expander("📸 Προσθήκη Φώτο (Προαιρετικό)"):
+    enable_cam = st.checkbox("Κάμερα")
+    cam_img = st.camera_input("Λήψη") if enable_cam else None
 
-prompt = st.chat_input("Γράψε βλάβη, κωδικό ή μάρκα...")
+prompt = st.chat_input("Γράψε βλάβη (π.χ. ariston 501)...")
 
 if prompt:
-    # 1. User Message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
-    # 2. Logic Controller
     with st.chat_message("assistant"):
         media_content = []
         found_file_name = None
+        used_source = "Γενική Γνώση"
         
-        # A. Media processing
+        # 1. Εικόνα
         if cam_img:
             media_content.append(Image.open(cam_img))
-        if upl_file:
-             media_content.append(Image.open(upl_file) if "image" in upl_file.type else upl_file)
 
-        # B. Drive Logic
+        # 2. Drive Search
         if ("Αρχεία" in search_source or "Υβριδικό" in search_source) and drive_service:
             with st.spinner("🕵️ Ψάχνω στα manuals..."):
                 all_files = list_drive_files()
                 target_file = find_relevant_file(prompt, all_files)
                 
                 if target_file:
-                    st.toast(f"📖 Βρέθηκε: {target_file['name']}")
+                    # ΕΜΦΑΝΙΣΗ ΠΡΑΣΙΝΟΥ ΜΗΝΥΜΑΤΟΣ ΟΤΙ ΒΡΕΘΗΚΕ
+                    st.markdown(f'<div class="source-box">📖 Βρήκα το manual: {target_file["name"]}</div>', unsafe_allow_html=True)
                     found_file_name = target_file['name']
+                    used_source = f"Manual: {found_file_name}"
                     
                     try:
                         file_data = download_file_content(target_file['id'])
@@ -175,7 +174,7 @@ if prompt:
                         st.error(f"Error reading file: {e}")
                 else:
                     if "Μόνο Αρχεία" in search_source:
-                        st.warning("Δεν βρέθηκε σχετικό manual στο Drive.")
+                        st.warning("⚠️ Δεν βρέθηκε manual. Δοκίμασε να γράψεις τη μάρκα πιο καθαρά.")
 
         # 3. AI Generation
         if media_content or "Γενική" in search_source or ("Υβριδικό" in search_source):
@@ -184,18 +183,26 @@ if prompt:
                 
                 source_instruction = ""
                 if found_file_name:
-                    source_instruction = f"Βασίσου στο αρχείο '{found_file_name}' που σου δίνω."
-                elif "Μόνο Αρχεία" in search_source and not found_file_name:
-                    source_instruction = "Απάντησε ΜΟΝΟ αν βρεις την πληροφορία στα αρχεία. Αλλιώς πες 'Δεν γνωρίζω'."
+                    source_instruction = f"Έχεις το manual '{found_file_name}'. Απάντησε ΒΑΣΕΙ ΑΥΤΟΥ."
+                else:
+                    source_instruction = "Δεν βρέθηκε manual. Χρησιμοποίησε τη γενική σου γνώση."
                 
+                # ΕΙΔΙΚΗ ΕΝΤΟΛΗ ΓΙΑ ΠΗΓΕΣ ΚΑΙ ΛΑΘΗ
                 full_prompt = f"""
                 Είσαι {st.session_state.tech_mode}. Μίλα Ελληνικά.
-                {source_instruction}
+                
+                ΟΔΗΓΙΕΣ:
+                1. Ο χρήστης μπορεί να κάνει ορθογραφικά λάθη ή να χρησιμοποιεί φωνητική πληκτρολόγηση (π.χ. "μάνια" αντί για "manual", "αριστο" αντί για "ariston"). ΚΑΤΑΛΑΒΕ ΤΙ ΕΝΝΟΕΙ και αγνόησε τα λάθη.
+                2. {source_instruction}
+                3. ΣΤΟ ΤΕΛΟΣ ΤΗΣ ΑΠΑΝΤΗΣΗΣ, άσε μια κενή γραμμή και γράψε με έντονα γράμματα την πηγή:
+                   - Αν χρησιμοποίησες αρχείο: "📚 **Πηγή:** Manual ({found_file_name if found_file_name else 'Άγνωστο'})"
+                   - Αν όχι: "🌐 **Πηγή:** Γενική Γνώση (AI)"
+                
                 Ερώτηση: {prompt}
                 """
                 
-                with st.spinner("🧠 Ανάλυση 2.0..."):
-                    # Καθαρή κλήση generate_content
+                with st.spinner("🧠 Επεξεργασία..."):
+                    # Καθαρή κλήση
                     response = model.generate_content([full_prompt, *media_content])
                     st.markdown(response.text)
                     st.session_state.messages.append({"role": "assistant", "content": response.text})
