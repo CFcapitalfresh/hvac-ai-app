@@ -54,22 +54,32 @@ LOGS_FILE_NAME = "hvac_logs.json"
 # --- 1. SETUP GOOGLE SERVICES ---
 auth_status = "⏳ Connecting..."
 drive_service = None
+# ΟΡΙΣΜΟΣ ΝΕΩΝ ΟΝΟΜΑΤΩΝ ΜΟΝΤΕΛΩΝ: Pro -> 2.5 Flash -> 1.5 Flash (για συμβατότητα)
+MODEL_PRIORITIES = ["gemini-1.5-pro", "gemini-2.5-flash", "gemini-1.5-flash"] 
 CURRENT_MODEL_NAME = "gemini-1.5-flash" # Default fallback
 
 try:
     # A. Gemini Setup
     if "GEMINI_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
-        # Auto-detect best model
+        # Αυτόματη ανίχνευση του καλύτερου διαθέσιμου μοντέλου
         try:
             all_models = [m.name.replace("models/", "") for m in genai.list_models()]
-            priority_list = ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
-            for wanted in priority_list:
+            
+            best_model_found = False
+            for wanted in MODEL_PRIORITIES:
                 if wanted in all_models:
                     CURRENT_MODEL_NAME = wanted
+                    best_model_found = True
                     break
-        except: pass
+            
+            # Ενημερώνουμε τη λίστα προτεραιότητας Fallback με τα πραγματικά διαθέσιμα
+            MODEL_PRIORITIES = [m for m in MODEL_PRIORITIES if m in all_models]
+            if not MODEL_PRIORITIES: MODEL_PRIORITIES = ["gemini-2.5-flash"] # Εσχατη λύση (πιο πιθανό να υπάρχει)
 
+        except Exception as e:
+            auth_status = f"⚠️ Gemini ListModels Error: {str(e)}"
+            
     # B. Drive Setup
     if "GCP_SERVICE_ACCOUNT" in st.secrets:
         gcp_raw = st.secrets["GCP_SERVICE_ACCOUNT"].strip()
@@ -154,7 +164,8 @@ def download_temp_for_ai(file_id, file_name):
 def identify_model_deep_scan(file_path):
     """DEEP SCAN: Βλέπει τις πρώτες σελίδες για ακρίβεια"""
     try:
-        model = genai.GenerativeModel(CURRENT_MODEL_NAME)
+        # Χρησιμοποιούμε το CURRENT_MODEL_NAME που είναι το καλύτερο διαθέσιμο
+        model = genai.GenerativeModel(CURRENT_MODEL_NAME) 
         gfile = genai.upload_file(file_path)
         
         # Αναμονή επεξεργασίας από Google
@@ -192,6 +203,7 @@ def log_activity(email, action, detail):
     }
     logs.append(entry)
     save_json_to_drive(LOGS_FILE_NAME, logs)
+
 # --- 4. STATE MANAGEMENT ---
 
 # Φόρτωση Index/Users με προστασία (or {})
@@ -201,13 +213,42 @@ if "master_index" not in st.session_state:
 if "users_db" not in st.session_state:
     st.session_state.users_db = load_json_from_drive(USERS_FILE_NAME) or {}
 
-# Η κρίσιμη γραμμή που έλειπε ή μετακινήθηκε:
 if "user_info" not in st.session_state:
     st.session_state.user_info = None
 
 if "new_files_ids" not in st.session_state:
     st.session_state.new_files_ids = []
-# --- 4. UI PAGES ---
+
+# --- AI Fallback Logic ---
+def get_ai_response_with_fallback(full_prompt, user_email):
+    """
+    Δοκιμάζει όλα τα μοντέλα στη λίστα προτεραιότητας.
+    Αν αποτύχει κάποιο (π.χ. 404/Rate Limit/Timeout), δοκιμάζει το επόμενο.
+    """
+    for model_name in MODEL_PRIORITIES:
+        try:
+            model = genai.GenerativeModel(model_name)
+            resp = model.generate_content(full_prompt)
+            # Επιτυχία: Επιστρέφουμε την απάντηση και το όνομα του μοντέλου που λειτούργησε
+            return resp, model_name 
+        
+        except exceptions.ResourceExhausted:
+            # Σφάλμα λόγω υπερβολικού φόρτου (Rate Limit / Timeout)
+            st.warning(f"⚠️ Το μοντέλο {model_name} είναι απασχολημένο ή έληξε ο χρόνος (Resource Exhausted). Δοκιμάζω το επόμενο...")
+            log_activity(user_email, "AI_FALLBACK_FAIL", f"Model {model_name} failed (Timeout/Rate Limit)")
+            continue
+        
+        except Exception as e:
+            # Γενικό σφάλμα (Πιάνει και το 404 Not Found)
+            st.warning(f"🚨 Σφάλμα με το μοντέλο {model_name}: {e}. Δοκιμάζω το επόμενο.")
+            log_activity(user_email, "AI_FALLBACK_FAIL", f"Model {model_name} failed: {str(e)}")
+            continue
+    
+    # Αν όλα τα μοντέλα αποτύχουν
+    return None, None
+# --- ΤΕΛΟΣ AI Fallback Logic ---
+
+# --- 5. UI PAGES ---
 
 def login_page():
     st.title("🔐 CF Capital Fresh Portal")
@@ -254,7 +295,8 @@ def main_app():
     
     # Header Info
     c1, c2 = st.columns([3,1])
-    with c1: st.caption(f"👤 {user.get('name')} | 🤖 Brain: {CURRENT_MODEL_NAME}")
+    # Εμφάνιση της λίστας προτεραιότητας
+    with c1: st.caption(f"👤 {user.get('name')} | 🤖 Brain Priority: {', '.join(MODEL_PRIORITIES)}")
     with c2: 
         if st.button("Logout"): 
             st.session_state.user_info = None; st.rerun()
@@ -329,7 +371,7 @@ def main_app():
                                 save_json_to_drive(INDEX_FILE_NAME, st.session_state.master_index)
                             except Exception as e:
                                 print(f"Error on {fname}: {e}")
-                        
+                            
                         status_text.success("✅ Ο Συγχρονισμός Ολοκληρώθηκε!")
                         st.balloons()
                         # Clear processed list
@@ -367,10 +409,7 @@ def main_app():
                 found_manual_txt = f"{data.get('model_info')} ({data['name']})"
                 log_activity(user['email'], "SEARCH_HIT", found_manual_txt)
                 
-                # Κατέβασμα για Context
-                # (Εδώ απλά το δηλώνουμε στο prompt για οικονομία χρόνου, 
-                # σε full version θα κατέβαινε και το αρχείο για RAG)
-                
+                # Εμφάνιση ειδοποίησης Manual
                 display_html = f"""
                 <div class="manual-box">
                     <b>📘 Βρέθηκε Manual:</b> {found_manual_txt}<br>
@@ -385,36 +424,39 @@ def main_app():
                 st.markdown(no_man_html, unsafe_allow_html=True)
                 st.session_state.messages.append({"role": "assistant", "content": no_man_html})
 
-            # 2. AI Generation (Hybrid)
-            try:
-                model = genai.GenerativeModel(CURRENT_MODEL_NAME)
-                
-                full_prompt = f"""
-                Είσαι έμπειρος τεχνικός {tech_mode}.
-                Ερώτηση Πελάτη: "{prompt}"
-                
-                ΔΕΔΟΜΕΝΑ MANUAL: {found_manual_txt if found_manual_txt else "Κανένα (Χρήση Γενικής Γνώσης)"}
-                
-                ΟΔΗΓΙΕΣ:
-                1. Αν υπάρχει Manual, εξήγησε τι λέει ο κατασκευαστής.
-                2. Πρόσθεσε τη δική σου εμπειρία (Γενική Γνώση) για την επίλυση.
-                3. Χώρισε την απάντηση ξεκάθαρα.
+            # 2. AI Generation (Hybrid) - ΧΡΗΣΗ ΤΗΣ ΣΥΝΑΡΤΗΣΗΣ FALLBACK
+            
+            full_prompt = f"""
+            Είσαι έμπειρος τεχνικός {tech_mode}.
+            Ερώτηση Πελάτη: "{prompt}"
+            
+            ΔΕΔΟΜΕΝΑ MANUAL: {found_manual_txt if found_manual_txt else "Κανένα (Χρήση Γενικής Γνώσης)"}
+            
+            ΟΔΗΓΙΕΣ:
+            1. Αν υπάρχει Manual, εξήγησε τι λέει ο κατασκευαστής.
+            2. Πρόσθεσε τη δική σου εμπειρία (Γενική Γνώση) για την επίλυση.
+            3. Χώρισε την απάντηση ξεκάθαρα.
+            """
+            
+            with st.spinner("🧠 Ανάλυση..."):
+                resp, used_model = get_ai_response_with_fallback(full_prompt, user['email'])
+            
+            # Εμφάνιση αποτελέσματος ΜΟΝΟ αν η κλήση ήταν επιτυχής
+            if resp:
+                final_html = f"""
+                <div class="ai-box">
+                    <b>🤖 Απάντηση AI ({used_model}):</b><br>
+                    {resp.text}
+                </div>
                 """
-                
-                with st.spinner("🧠 Ανάλυση..."):
-                    resp = model.generate_content(full_prompt)
-                    
-                    final_html = f"""
-                    <div class="ai-box">
-                        <b>🤖 Απάντηση AI:</b><br>
-                        {resp.text}
-                    </div>
-                    """
-                    st.markdown(final_html, unsafe_allow_html=True)
-                    st.session_state.messages.append({"role": "assistant", "content": final_html})
+                st.markdown(final_html, unsafe_allow_html=True)
+                st.session_state.messages.append({"role": "assistant", "content": final_html})
+            else:
+                # Εάν όλα τα μοντέλα απέτυχαν
+                final_html = '<div class="warning-box">🛑 Αποτυχία: Όλα τα διαθέσιμα AI μοντέλα απέτυχαν να απαντήσουν. Δοκιμάστε ξανά αργότερα.</div>'
+                st.markdown(final_html, unsafe_allow_html=True)
+                st.session_state.messages.append({"role": "assistant", "content": final_html})
 
-            except Exception as e:
-                st.error(f"AI Error: {e}")
 
 # --- ENTRY ---
 if st.session_state.user_info is None:
