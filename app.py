@@ -24,17 +24,16 @@ st.markdown("""<style>
     .login-box { border: 1px solid #ddd; padding: 20px; border-radius: 10px; background-color: #f8f9fa; max-width: 500px; margin: auto;}
 </style>""", unsafe_allow_html=True)
 
-# --- 👑 ADMIN CONFIGURATION (ΒΑΛΕ ΤΟ EMAIL ΣΟΥ ΕΔΩ!) ---
-ADMIN_EMAIL = "nektal007@gmail.com"  # <--- ΑΛΛΑΞΕ ΤΟ ΑΝ ΘΕΣ ΑΛΛΟ EMAIL
+# --- 👑 ADMIN CONFIGURATION ---
+ADMIN_EMAIL = "nektal007@gmail.com"  # <--- ΤΟ EMAIL ΣΟΥ
 FILES = {
     "index": "hvac_master_index_v10.json",
     "users": "hvac_users.json",
     "logs": "hvac_logs.json"
 }
 
-# --- GLOBAL VARIABLES ---
-CURRENT_YEAR = datetime.datetime.now().year
-drive_service = None
+# --- 🔥 ΤΟ ΜΟΝΤΕΛΟ ΠΟΥ ΖΗΤΗΣΕΣ (2.0) ---
+CURRENT_MODEL_NAME = "gemini-2.0-flash-exp"
 
 # --- AUTHENTICATION & DRIVE SETUP ---
 def setup_services():
@@ -100,7 +99,6 @@ def log_activity(user_email, action, details):
         "details": details
     }
     logs.append(new_entry)
-    # Κρατάμε μόνο τα τελευταία 1000 logs για ταχύτητα
     if len(logs) > 1000: logs = logs[-1000:]
     save_json_file(FILES["logs"], logs)
 
@@ -126,7 +124,6 @@ def login_screen():
                         st.warning("⏳ Ο λογαριασμός σας είναι υπό έγκριση από τον διαχειριστή.")
                     else:
                         st.session_state.user_email = email
-                        # Αν είναι το email του Admin, του δίνουμε ρόλο admin
                         if email == ADMIN_EMAIL.lower():
                             st.session_state.user_role = "admin"
                         else:
@@ -145,11 +142,6 @@ def login_screen():
         new_pass = st.text_input("Κωδικός", type="password", key="reg_pass")
         new_pass_conf = st.text_input("Επιβεβαίωση Κωδικού", type="password", key="reg_pass_conf")
         
-        # GDPR Checkbox
-        gdpr_text = """
-        **ΔΗΛΩΣΗ ΑΠΟΡΡΗΤΟΥ (GDPR):** Αποδέχομαι την επεξεργασία του email και του ιστορικού αναζητήσεων 
-        για τη λειτουργία της υπηρεσίας CF Capital Fresh. Τα δεδομένα δεν πωλούνται σε τρίτους.
-        """
         gdpr_check = st.checkbox("Διάβασα και αποδέχομαι τους όρους χρήσης και GDPR.")
         
         if st.button("Εγγραφή"):
@@ -164,10 +156,7 @@ def login_screen():
             elif "@" not in new_email:
                 st.error("⚠️ Μη έγκυρο email.")
             else:
-                # Δημιουργία Χρήστη (Pending)
-                # Αν είναι το δικό σου email, γίνεσαι αυτόματα approved admin
                 role = "admin" if new_email == ADMIN_EMAIL.lower() else "pending"
-                
                 users_db[new_email] = {
                     "password": hash_password(new_pass),
                     "role": role,
@@ -175,7 +164,7 @@ def login_screen():
                     "registered_at": str(datetime.datetime.now())
                 }
                 save_json_file(FILES["users"], users_db)
-                st.success("✅ Η εγγραφή ολοκληρώθηκε! Αν είστε χρήστης, περιμένετε έγκριση.")
+                st.success("✅ Η εγγραφή ολοκληρώθηκε! Κάντε είσοδο.")
                 log_activity(new_email, "REGISTER", "Νέα εγγραφή")
 
 # --- MAIN APP LOGIC ---
@@ -183,9 +172,7 @@ if not st.session_state.user_email:
     login_screen()
     
 else:
-    # === ΕΙΜΑΣΤΕ ΜΕΣΑ (LOGGED IN) ===
-    
-    # 1. SIDEBAR (ΔΙΑΦΟΡΕΤΙΚΟ ΓΙΑ ADMIN / USER)
+    # === ΕΙΜΑΣΤΕ ΜΕΣΑ ===
     with st.sidebar:
         try: st.image("logo.png", use_column_width=True)
         except: st.warning("No Logo")
@@ -201,14 +188,12 @@ else:
             
         st.divider()
         
-        # ADMIN PANEL ΜΟΝΟ ΓΙΑ ΕΣΕΝΑ
         if st.session_state.user_role == "admin":
             st.subheader("🛠️ Admin Tools")
             admin_mode = st.radio("Επιλογή:", ["💬 Chat", "👥 Χρήστες", "🕵️ Logs", "🔄 Sync"])
         else:
-            admin_mode = "💬 Chat" # Οι χρήστες βλέπουν μόνο chat
+            admin_mode = "💬 Chat"
             
-        # FOOTER (Για όλους)
         st.markdown("---")
         st.markdown(f"""
         <div class="sidebar-footer">
@@ -219,13 +204,10 @@ else:
         </div>
         """, unsafe_allow_html=True)
 
-    # 2. MAIN CONTENT AREA
-    
-    # --- A. CHAT (Η ΚΥΡΙΑ ΕΦΑΡΜΟΓΗ) ---
+    # --- MAIN CONTENT ---
     if admin_mode == "💬 Chat":
         st.title("CF HVAC SMART EXPERT")
         
-        # Load Index only when needed
         if "master_index" not in st.session_state:
             st.session_state.master_index = load_json_file(FILES["index"], {})
             
@@ -242,14 +224,11 @@ else:
 
         user_input = st.chat_input("Γράψε βλάβη...")
         if user_input:
-            # Καταγραφή στο LOG
             log_activity(st.session_state.user_email, "SEARCH", user_input)
-            
             st.session_state.messages.append({"role": "user", "content": user_input})
             with st.chat_message("user"): st.markdown(user_input)
             
             with st.chat_message("assistant"):
-                # Search
                 found_data, media_items = None, []
                 matches = []
                 for fid, data in st.session_state.master_index.items():
@@ -262,7 +241,6 @@ else:
                     found_data = f"{data['model_info']} ({data['name']})"
                     st.markdown(f'<div class="source-box">📖 Εντοπίστηκε: <b>{found_data}</b></div>', unsafe_allow_html=True)
                     try:
-                        # Download logic (reused)
                         req = drive_service.files().get_media(fileId=fid)
                         fh = io.BytesIO()
                         downloader = MediaIoBaseDownload(fh, req)
@@ -278,25 +256,22 @@ else:
                         media_items.append(gf)
                     except: pass
                 
-                # Generate Answer
                 try:
-                    model = genai.GenerativeModel("gemini-1.5-flash") # Ή το dynamic logic αν το θες
+                    # ΧΡΗΣΗ ΤΟΥ GEMINI 2.0 FLASH
+                    model = genai.GenerativeModel(CURRENT_MODEL_NAME)
                     prompt = f"Είσαι {st.session_state.tech_mode}. Manual: {found_data or 'Όχι'}. Ερώτηση: {user_input}"
                     resp = model.generate_content([prompt, *media_items])
                     st.markdown(resp.text)
                     st.session_state.messages.append({"role": "assistant", "content": resp.text})
                 except Exception as e: st.error(f"Error: {e}")
 
-    # --- B. USER MANAGEMENT (MONO ADMIN) ---
     elif admin_mode == "👥 Χρήστες":
         st.header("Διαχείριση Χρηστών")
         users_db = load_json_file(FILES["users"], {})
         
         col_list, col_action = st.columns([2, 1])
-        
         with col_list:
             st.subheader("Εγγεγραμμένοι")
-            # Μετατροπή σε λίστα για εμφάνιση
             user_list = []
             for email, info in users_db.items():
                 user_list.append({"Email": email, "Role": info["role"], "Date": info.get("registered_at", "-")})
@@ -304,57 +279,45 @@ else:
             
         with col_action:
             st.subheader("Ενέργειες")
-            # Λίστα με Pending
             pending_users = [e for e, i in users_db.items() if i["role"] == "pending"]
-            
             if pending_users:
-                st.warning(f"⚠️ {len(pending_users)} χρήστες περιμένουν έγκριση!")
-                user_to_approve = st.selectbox("Επιλογή για Έγκριση", pending_users)
-                if st.button("✅ Έγκριση Χρήστη"):
+                st.warning(f"⚠️ {len(pending_users)} χρήστες περιμένουν!")
+                user_to_approve = st.selectbox("Επιλογή", pending_users)
+                if st.button("✅ Έγκριση"):
                     users_db[user_to_approve]["role"] = "user"
                     save_json_file(FILES["users"], users_db)
-                    st.success(f"Ο χρήστης {user_to_approve} εγκρίθηκε!")
+                    st.success("Εγκρίθηκε!")
                     log_activity(st.session_state.user_email, "ADMIN_APPROVE", user_to_approve)
                     st.rerun()
-            else:
-                st.success("Κανένας νέος χρήστης.")
-                
+            else: st.success("Κανένας νέος χρήστης.")
+            
             st.divider()
-            # Διαγραφή
-            user_to_delete = st.selectbox("Επιλογή για Διαγραφή", list(users_db.keys()))
-            if st.button("🗑️ Διαγραφή Χρήστη"):
-                if user_to_delete == ADMIN_EMAIL.lower():
-                    st.error("Δεν μπορείς να διαγράψεις τον Admin!")
+            user_to_delete = st.selectbox("Διαγραφή", list(users_db.keys()))
+            if st.button("🗑️ Διαγραφή"):
+                if user_to_delete == ADMIN_EMAIL.lower(): st.error("Όχι τον Admin!")
                 else:
                     del users_db[user_to_delete]
                     save_json_file(FILES["users"], users_db)
-                    st.warning(f"Διαγράφηκε: {user_to_delete}")
                     st.rerun()
 
-    # --- C. ACTIVITY LOGS (MONO ADMIN) ---
     elif admin_mode == "🕵️ Logs":
-        st.header("Ιστορικό Δραστηριότητας")
+        st.header("Ιστορικό")
         logs = load_json_file(FILES["logs"], [])
-        # Εμφάνιση των τελευταίων πρώτα
         st.dataframe(logs[::-1], height=500)
 
-    # --- D. SYNC (MONO ADMIN) ---
     elif admin_mode == "🔄 Sync":
         st.header("Συγχρονισμός Βάσης")
-        
-        # Λογική Sync (ίδια με παλιά, απλά μέσα στο admin panel)
-        if st.button("Εκκίνηση Σάρωσης Drive", type="primary"):
+        if st.button("Εκκίνηση Σάρωσης", type="primary"):
             st.session_state.master_index = load_json_file(FILES["index"], {})
-            
             def get_all_drive_files_meta():
                 if not drive_service: return []
                 all_files = []
                 page_token = None
                 try:
                     while True:
-                        response = drive_service.files().list(q="mimeType != 'application/vnd.google-apps.folder' and trashed = false", fields='nextPageToken, files(id, name)', pageSize=1000, pageToken=page_token).execute()
-                        all_files.extend(response.get('files', []))
-                        page_token = response.get('nextPageToken', None)
+                        res = drive_service.files().list(q="mimeType != 'application/vnd.google-apps.folder' and trashed = false", fields='nextPageToken, files(id, name)', pageSize=1000, pageToken=page_token).execute()
+                        all_files.extend(res.get('files', []))
+                        page_token = res.get('nextPageToken', None)
                         if page_token is None: break
                     return all_files
                 except: return []
@@ -366,16 +329,12 @@ else:
             new_files_ids = list(drive_ids - indexed_ids)
             
             if new_files_ids:
-                st.info(f"🆕 Βρέθηκαν {len(new_files_ids)} νέα αρχεία. Ξεκινάω...")
+                st.info(f"🆕 Βρέθηκαν {len(new_files_ids)} νέα αρχεία.")
                 progress_bar = st.progress(0)
-                
                 for i, fid in enumerate(new_files_ids):
                     fname = drive_files_map[fid]
-                    st.write(f"🔍 Ανάλυση ({i+1}/{len(new_files_ids)}): `{fname}`")
-                    
-                    # AI Vision Logic
+                    st.write(f"🔍 Ανάλυση: `{fname}`")
                     try:
-                        # Download temp
                         req = drive_service.files().get_media(fileId=fid)
                         fh = io.BytesIO()
                         downloader = MediaIoBaseDownload(fh, req)
@@ -386,23 +345,18 @@ else:
                             tmp.write(fh.getvalue())
                             tmp_path = tmp.name
                         
-                        # AI Identify
-                        model = genai.GenerativeModel("gemini-1.5-flash")
+                        # GEMINI 2.0 FLASH VISION
+                        model = genai.GenerativeModel(CURRENT_MODEL_NAME)
                         gfile = genai.upload_file(tmp_path)
                         while gfile.state.name == "PROCESSING": time.sleep(0.5); gfile = genai.get_file(gfile.name)
                         prompt = "Διάβασε την πρώτη σελίδα. Ποια είναι η Μάρκα και το Μοντέλο; Απάντησε ΜΟΝΟ με Μάρκα/Μοντέλο."
                         res = model.generate_content([prompt, gfile])
                         model_info = res.text.strip()
                         
-                        # Update & Save per file
                         st.session_state.master_index[fid] = {"name": fname, "model_info": model_info}
                         save_json_file(FILES["index"], st.session_state.master_index)
-                        
-                    except Exception as e: st.error(f"Error on {fname}: {e}")
-                    
+                    except Exception as e: st.error(f"Error: {e}")
                     progress_bar.progress((i + 1) / len(new_files_ids))
-                
                 st.success("✅ Ολοκληρώθηκε!")
                 log_activity(st.session_state.user_email, "SYNC", f"Προστέθηκαν {len(new_files_ids)} manuals")
-            else:
-                st.success("✅ Όλα ενημερωμένα.")
+            else: st.success("✅ Όλα ενημερωμένα.")
