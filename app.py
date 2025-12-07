@@ -9,9 +9,10 @@ import json
 import tempfile
 import os
 import time
+import difflib  # ΝΕΟ: Βιβλιοθήκη για Fuzzy Matching
 
 # --- ΡΥΘΜΙΣΕΙΣ ΣΕΛΙΔΑΣ ---
-st.set_page_config(page_title="HVAC Smart", page_icon="🧠", layout="centered")
+st.set_page_config(page_title="HVAC Smart V2", page_icon="🧠", layout="centered")
 
 # --- CSS ---
 st.markdown("""<style>
@@ -48,7 +49,8 @@ try:
             info["private_key"] = info["private_key"].replace("\\n", "\n")
             
         creds = service_account.Credentials.from_service_account_info(
-            info, scopes=['https://www.googleapis.com/auth/drive.readonly']
+            info, 
+            scopes=['https://www.googleapis.com/auth/drive.readonly']
         )
         drive_service = build('drive', 'v3', credentials=creds)
         auth_status = "✅ Drive Συνδεδεμένο"
@@ -62,7 +64,7 @@ with st.sidebar:
     st.header("⚙️ Ρυθμίσεις")
     st.info(auth_status)
     st.divider()
-    model_option = st.selectbox("Μοντέλο AI", ["gemini-2.0-flash", "gemini-2.0-pro-exp-02-05"])
+    model_option = st.selectbox("Μοντέλο AI", ["gemini-2.0-flash", "gemini-1.5-pro"])
     st.divider()
     if st.button("🗑️ Νέα Συζήτηση", type="primary"):
         st.session_state.messages = []
@@ -105,20 +107,39 @@ def download_file_content(file_id):
     return fh.getvalue()
 
 def find_relevant_file(user_query, files):
-    """Αναζήτηση αρχείου με ανοχή στα λάθη"""
+    """Αναζήτηση με Fuzzy Matching (ανοχή σε ορθογραφικά)"""
     user_query = user_query.lower()
     best_match = None
+    highest_score = 0.0
     
-    # 1. Ακριβής αναζήτηση λέξεων (πάνω από 3 γράμματα)
+    # Λέξεις κλειδιά από την ερώτηση (αγνοούμε μικρές λέξεις < 3 χαρακτήρες)
     keywords = [w for w in user_query.split() if len(w) > 2]
     
     for f in files:
         fname = f['name'].lower()
-        # Αν βρει έστω και μία λέξη κλειδί (π.χ. 'ariston')
-        if any(k in fname for k in keywords):
-            return f
+        # Καθαρίζουμε την κατάληξη για καλύτερη σύγκριση
+        fname_clean = fname.replace('.pdf', '').replace('.jpg', '').replace('.png', '')
+        file_keywords = fname_clean.split()
+        
+        current_file_score = 0
+        
+        # Έλεγχος κάθε λέξης της αναζήτησης
+        for k in keywords:
+            # 1. Ακριβές ταίριασμα (Bonus πόντοι)
+            if k in fname:
+                current_file_score += 2
             
-    return None
+            # 2. Fuzzy ταίριασμα (π.χ. aristn ~= ariston)
+            # cutoff=0.6 σημαίνει 60% ομοιότητα
+            matches = difflib.get_close_matches(k, file_keywords, n=1, cutoff=0.6)
+            if matches:
+                current_file_score += 1
+        
+        if current_file_score > highest_score:
+            highest_score = current_file_score
+            best_match = f
+            
+    return best_match
 
 # --- CHAT UI ---
 if "messages" not in st.session_state: st.session_state.messages = []
@@ -139,7 +160,6 @@ if prompt:
     with st.chat_message("assistant"):
         media_content = []
         found_file_name = None
-        used_source = "Γενική Γνώση"
         
         # 1. Εικόνα
         if cam_img:
@@ -152,10 +172,8 @@ if prompt:
                 target_file = find_relevant_file(prompt, all_files)
                 
                 if target_file:
-                    # ΕΜΦΑΝΙΣΗ ΠΡΑΣΙΝΟΥ ΜΗΝΥΜΑΤΟΣ ΟΤΙ ΒΡΕΘΗΚΕ
                     st.markdown(f'<div class="source-box">📖 Βρήκα το manual: {target_file["name"]}</div>', unsafe_allow_html=True)
                     found_file_name = target_file['name']
-                    used_source = f"Manual: {found_file_name}"
                     
                     try:
                         file_data = download_file_content(target_file['id'])
@@ -181,28 +199,39 @@ if prompt:
             try:
                 model = genai.GenerativeModel(model_option)
                 
+                # --- ΕΤΟΙΜΑΣΙΑ ΙΣΤΟΡΙΚΟΥ (MEMORY) ---
+                chat_history_str = ""
+                # Παίρνουμε τα τελευταία 10 μηνύματα για context
+                recent_msgs = st.session_state.messages[-10:] 
+                for msg in recent_msgs:
+                    role_label = "ΤΕΧΝΙΚΟΣ" if msg["role"] == "user" else "AI"
+                    chat_history_str += f"{role_label}: {msg['content']}\n"
+                
                 source_instruction = ""
                 if found_file_name:
                     source_instruction = f"Έχεις το manual '{found_file_name}'. Απάντησε ΒΑΣΕΙ ΑΥΤΟΥ."
                 else:
                     source_instruction = "Δεν βρέθηκε manual. Χρησιμοποίησε τη γενική σου γνώση."
                 
-                # ΕΙΔΙΚΗ ΕΝΤΟΛΗ ΓΙΑ ΠΗΓΕΣ ΚΑΙ ΛΑΘΗ
                 full_prompt = f"""
                 Είσαι {st.session_state.tech_mode}. Μίλα Ελληνικά.
                 
+                === ΙΣΤΟΡΙΚΟ ΣΥΖΗΤΗΣΗΣ (Context) ===
+                {chat_history_str}
+                ====================================
+                
                 ΟΔΗΓΙΕΣ:
-                1. Ο χρήστης μπορεί να κάνει ορθογραφικά λάθη ή να χρησιμοποιεί φωνητική πληκτρολόγηση (π.χ. "μάνια" αντί για "manual", "αριστο" αντί για "ariston"). ΚΑΤΑΛΑΒΕ ΤΙ ΕΝΝΟΕΙ και αγνόησε τα λάθη.
+                1. Ο χρήστης μπορεί να κάνει ορθογραφικά λάθη. ΚΑΤΑΛΑΒΕ ΤΙ ΕΝΝΟΕΙ.
                 2. {source_instruction}
-                3. ΣΤΟ ΤΕΛΟΣ ΤΗΣ ΑΠΑΝΤΗΣΗΣ, άσε μια κενή γραμμή και γράψε με έντονα γράμματα την πηγή:
+                3. Αν η ερώτηση είναι συνέχεια της προηγούμενης (δές Ιστορικό), απάντησε συνδυαστικά.
+                4. ΣΤΟ ΤΕΛΟΣ ΤΗΣ ΑΠΑΝΤΗΣΗΣ, άσε μια κενή γραμμή και γράψε με έντονα γράμματα την πηγή:
                    - Αν χρησιμοποίησες αρχείο: "📚 **Πηγή:** Manual ({found_file_name if found_file_name else 'Άγνωστο'})"
                    - Αν όχι: "🌐 **Πηγή:** Γενική Γνώση (AI)"
                 
-                Ερώτηση: {prompt}
+                ΤΡΕΧΟΥΣΑ ΕΡΩΤΗΣΗ: {prompt}
                 """
                 
                 with st.spinner("🧠 Επεξεργασία..."):
-                    # Καθαρή κλήση
                     response = model.generate_content([full_prompt, *media_content])
                     st.markdown(response.text)
                     st.session_state.messages.append({"role": "assistant", "content": response.text})
