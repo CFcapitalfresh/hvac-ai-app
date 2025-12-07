@@ -25,7 +25,7 @@ st.markdown("""<style>
 </style>""", unsafe_allow_html=True)
 
 # --- 👑 ADMIN CONFIGURATION (ΒΑΛΕ ΤΟ EMAIL ΣΟΥ ΕΔΩ!) ---
-ADMIN_EMAIL = "nektal007@gmil.com"  # <--- ΑΛΛΑΞΕ ΤΟ ΑΝ ΘΕΣ ΑΛΛΟ EMAIL
+ADMIN_EMAIL = "nektal007@gmail.com"  # <--- ΑΛΛΑΞΕ ΤΟ ΑΝ ΘΕΣ ΑΛΛΟ EMAIL
 FILES = {
     "index": "hvac_master_index_v10.json",
     "users": "hvac_users.json",
