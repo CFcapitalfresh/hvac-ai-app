@@ -9,37 +9,42 @@ import json
 import tempfile
 import os
 import time
-import difflib  # ΝΕΟ: Βιβλιοθήκη για Fuzzy Matching
+import difflib
+from google.api_core import exceptions
 
 # --- ΡΥΘΜΙΣΕΙΣ ΣΕΛΙΔΑΣ ---
-st.set_page_config(page_title="HVAC Smart V2", page_icon="🧠", layout="centered")
+st.set_page_config(page_title="HVAC Smart V3", page_icon="🧠", layout="centered")
 
 # --- CSS ---
 st.markdown("""<style>
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} .stDeployButton {display:none;}
     div[data-testid="stCameraInput"] button {background-color: #ef4444; color: white;}
     .stChatMessage { border-radius: 12px; }
-    /* Πλαίσιο Πηγής */
     .source-box { 
-        background-color: #d1fae5; 
-        color: #065f46; 
-        padding: 10px; 
-        border-radius: 8px; 
-        font-size: 14px; 
-        font-weight: bold; 
-        margin-bottom: 10px;
-        border: 1px solid #34d399;
+        background-color: #d1fae5; color: #065f46; padding: 10px; 
+        border-radius: 8px; font-size: 14px; font-weight: bold; 
+        margin-bottom: 10px; border: 1px solid #34d399;
     }
 </style>""", unsafe_allow_html=True)
 
 # --- ΣΥΝΔΕΣΗ (DRIVE & AI) ---
 auth_status = "⏳ ..."
 drive_service = None
+available_models = []
 
 try:
+    # 1. Σύνδεση AI
     if "GEMINI_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
+        # ΑΥΤΟΜΑΤΗ ΕΥΡΕΣΗ ΜΟΝΤΕΛΩΝ
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    available_models.append(m.name.replace("models/", ""))
+        except:
+            available_models = ["gemini-pro", "gemini-2.0-flash"] # Fallback αν αποτύχει η λίστα
     
+    # 2. Σύνδεση Drive
     if "GCP_SERVICE_ACCOUNT" in st.secrets:
         gcp_raw = st.secrets["GCP_SERVICE_ACCOUNT"].strip()
         if gcp_raw.startswith("'") and gcp_raw.endswith("'"): gcp_raw = gcp_raw[1:-1]
@@ -49,22 +54,27 @@ try:
             info["private_key"] = info["private_key"].replace("\\n", "\n")
             
         creds = service_account.Credentials.from_service_account_info(
-            info, 
-            scopes=['https://www.googleapis.com/auth/drive.readonly']
+            info, scopes=['https://www.googleapis.com/auth/drive.readonly']
         )
         drive_service = build('drive', 'v3', credentials=creds)
-        auth_status = "✅ Drive Συνδεδεμένο"
+        auth_status = "✅ Drive & AI Συνδεδεμένα"
     else:
         auth_status = "⚠️ Χωρίς Drive"
 except Exception as e:
-    auth_status = f"⚠️ Drive Error: {str(e)}"
+    auth_status = f"⚠️ Error: {str(e)}"
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Ρυθμίσεις")
     st.info(auth_status)
     st.divider()
-    model_option = st.selectbox("Μοντέλο AI", ["gemini-2.0-flash", "gemini-1.5-pro"])
+    
+    # Εμφάνιση των μοντέλων που βρέθηκαν πραγματικά
+    if available_models:
+        model_option = st.selectbox("Μοντέλο AI (Διαθέσιμα)", available_models, index=0)
+    else:
+        model_option = st.text_input("Γράψε Μοντέλο (π.χ. gemini-pro)", "gemini-2.0-flash")
+        
     st.divider()
     if st.button("🗑️ Νέα Συζήτηση", type="primary"):
         st.session_state.messages = []
@@ -107,38 +117,26 @@ def download_file_content(file_id):
     return fh.getvalue()
 
 def find_relevant_file(user_query, files):
-    """Αναζήτηση με Fuzzy Matching (ανοχή σε ορθογραφικά)"""
+    """Fuzzy Matching Αναζήτηση"""
     user_query = user_query.lower()
     best_match = None
     highest_score = 0.0
-    
-    # Λέξεις κλειδιά από την ερώτηση (αγνοούμε μικρές λέξεις < 3 χαρακτήρες)
     keywords = [w for w in user_query.split() if len(w) > 2]
     
     for f in files:
         fname = f['name'].lower()
-        # Καθαρίζουμε την κατάληξη για καλύτερη σύγκριση
         fname_clean = fname.replace('.pdf', '').replace('.jpg', '').replace('.png', '')
         file_keywords = fname_clean.split()
-        
         current_file_score = 0
         
-        # Έλεγχος κάθε λέξης της αναζήτησης
         for k in keywords:
-            # 1. Ακριβές ταίριασμα (Bonus πόντοι)
-            if k in fname:
-                current_file_score += 2
-            
-            # 2. Fuzzy ταίριασμα (π.χ. aristn ~= ariston)
-            # cutoff=0.6 σημαίνει 60% ομοιότητα
+            if k in fname: current_file_score += 2
             matches = difflib.get_close_matches(k, file_keywords, n=1, cutoff=0.6)
-            if matches:
-                current_file_score += 1
+            if matches: current_file_score += 1
         
         if current_file_score > highest_score:
             highest_score = current_file_score
             best_match = f
-            
     return best_match
 
 # --- CHAT UI ---
@@ -151,7 +149,7 @@ with st.expander("📸 Προσθήκη Φώτο (Προαιρετικό)"):
     enable_cam = st.checkbox("Κάμερα")
     cam_img = st.camera_input("Λήψη") if enable_cam else None
 
-prompt = st.chat_input("Γράψε βλάβη (π.χ. ariston 501)...")
+prompt = st.chat_input("Γράψε βλάβη...")
 
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -162,8 +160,7 @@ if prompt:
         found_file_name = None
         
         # 1. Εικόνα
-        if cam_img:
-            media_content.append(Image.open(cam_img))
+        if cam_img: media_content.append(Image.open(cam_img))
 
         # 2. Drive Search
         if ("Αρχεία" in search_source or "Υβριδικό" in search_source) and drive_service:
@@ -172,69 +169,76 @@ if prompt:
                 target_file = find_relevant_file(prompt, all_files)
                 
                 if target_file:
-                    st.markdown(f'<div class="source-box">📖 Βρήκα το manual: {target_file["name"]}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="source-box">📖 Βρήκα: {target_file["name"]}</div>', unsafe_allow_html=True)
                     found_file_name = target_file['name']
-                    
                     try:
                         file_data = download_file_content(target_file['id'])
                         suffix = ".pdf" if "pdf" in target_file['name'].lower() else ".jpg"
-                        
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                             tmp.write(file_data)
                             tmp_path = tmp.name
                         
                         gfile = genai.upload_file(tmp_path)
                         while gfile.state.name == "PROCESSING": 
-                            time.sleep(0.5)
+                            time.sleep(1)
                             gfile = genai.get_file(gfile.name)
                         media_content.append(gfile)
                     except Exception as e:
                         st.error(f"Error reading file: {e}")
                 else:
                     if "Μόνο Αρχεία" in search_source:
-                        st.warning("⚠️ Δεν βρέθηκε manual. Δοκίμασε να γράψεις τη μάρκα πιο καθαρά.")
+                        st.warning("⚠️ Δεν βρέθηκε manual.")
 
-        # 3. AI Generation
+        # 3. AI Generation (ME RETRY LOGIC)
         if media_content or "Γενική" in search_source or ("Υβριδικό" in search_source):
-            try:
-                model = genai.GenerativeModel(model_option)
+            
+            # Μνήμη (Context)
+            chat_history_str = ""
+            for msg in st.session_state.messages[-8:]:
+                role_label = "ΤΕΧΝΙΚΟΣ" if msg["role"] == "user" else "AI"
+                chat_history_str += f"{role_label}: {msg['content']}\n"
+            
+            source_instr = f"Έχεις το manual '{found_file_name}'." if found_file_name else "Δεν βρέθηκε manual."
+            
+            full_prompt = f"""
+            Είσαι {st.session_state.tech_mode}. Μίλα Ελληνικά.
+            
+            === ΙΣΤΟΡΙΚΟ ===
+            {chat_history_str}
+            ================
+            
+            ΟΔΗΓΙΕΣ:
+            1. Αγνοησε ορθογραφικά.
+            2. {source_instr}
+            3. ΣΤΟ ΤΕΛΟΣ γράψε πηγή (Manual ή Γενική Γνώση).
+            
+            ΕΡΩΤΗΣΗ: {prompt}
+            """
+            
+            # --- RETRY LOGIC ---
+            retry_attempts = 3
+            success = False
+            
+            with st.spinner("🧠 Επεξεργασία..."):
+                for attempt in range(retry_attempts):
+                    try:
+                        model = genai.GenerativeModel(model_option)
+                        response = model.generate_content([full_prompt, *media_content])
+                        
+                        st.markdown(response.text)
+                        st.session_state.messages.append({"role": "assistant", "content": response.text})
+                        success = True
+                        break 
+                        
+                    except exceptions.ResourceExhausted:
+                        wait = 3 * (attempt + 1)
+                        st.toast(f"⏳ Φόρτος δικτύου... Δοκιμή {attempt+1}/{retry_attempts} σε {wait}s")
+                        time.sleep(wait)
+                        continue
+                    except Exception as e:
+                        st.error(f"Σφάλμα: {e}")
+                        success = True 
+                        break
                 
-                # --- ΕΤΟΙΜΑΣΙΑ ΙΣΤΟΡΙΚΟΥ (MEMORY) ---
-                chat_history_str = ""
-                # Παίρνουμε τα τελευταία 10 μηνύματα για context
-                recent_msgs = st.session_state.messages[-10:] 
-                for msg in recent_msgs:
-                    role_label = "ΤΕΧΝΙΚΟΣ" if msg["role"] == "user" else "AI"
-                    chat_history_str += f"{role_label}: {msg['content']}\n"
-                
-                source_instruction = ""
-                if found_file_name:
-                    source_instruction = f"Έχεις το manual '{found_file_name}'. Απάντησε ΒΑΣΕΙ ΑΥΤΟΥ."
-                else:
-                    source_instruction = "Δεν βρέθηκε manual. Χρησιμοποίησε τη γενική σου γνώση."
-                
-                full_prompt = f"""
-                Είσαι {st.session_state.tech_mode}. Μίλα Ελληνικά.
-                
-                === ΙΣΤΟΡΙΚΟ ΣΥΖΗΤΗΣΗΣ (Context) ===
-                {chat_history_str}
-                ====================================
-                
-                ΟΔΗΓΙΕΣ:
-                1. Ο χρήστης μπορεί να κάνει ορθογραφικά λάθη. ΚΑΤΑΛΑΒΕ ΤΙ ΕΝΝΟΕΙ.
-                2. {source_instruction}
-                3. Αν η ερώτηση είναι συνέχεια της προηγούμενης (δές Ιστορικό), απάντησε συνδυαστικά.
-                4. ΣΤΟ ΤΕΛΟΣ ΤΗΣ ΑΠΑΝΤΗΣΗΣ, άσε μια κενή γραμμή και γράψε με έντονα γράμματα την πηγή:
-                   - Αν χρησιμοποίησες αρχείο: "📚 **Πηγή:** Manual ({found_file_name if found_file_name else 'Άγνωστο'})"
-                   - Αν όχι: "🌐 **Πηγή:** Γενική Γνώση (AI)"
-                
-                ΤΡΕΧΟΥΣΑ ΕΡΩΤΗΣΗ: {prompt}
-                """
-                
-                with st.spinner("🧠 Επεξεργασία..."):
-                    response = model.generate_content([full_prompt, *media_content])
-                    st.markdown(response.text)
-                    st.session_state.messages.append({"role": "assistant", "content": response.text})
-                 
-            except Exception as e:
-                st.error(f"Σφάλμα AI: {e}")
+                if not success:
+                    st.error("❌ Το σύστημα είναι υπερφορτωμένο. Δοκίμασε ξανά σε λίγο.")
