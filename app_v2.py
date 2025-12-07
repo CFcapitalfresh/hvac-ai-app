@@ -51,12 +51,13 @@ INDEX_FILE_NAME = "hvac_master_index_v10.json"
 USERS_FILE_NAME = "hvac_users.json"
 LOGS_FILE_NAME = "hvac_logs.json"
 
+# Ορίζουμε τα μοντέλα με σειρά προτεραιότητας: Pro -> 2.5 Flash -> 1.5 Flash (για συμβατότητα)
+MODEL_PRIORITIES = ["gemini-1.5-pro", "gemini-2.5-flash", "gemini-1.5-flash"] 
+CURRENT_MODEL_NAME = "gemini-1.5-flash" # Default fallback
+
 # --- 1. SETUP GOOGLE SERVICES ---
 auth_status = "⏳ Connecting..."
 drive_service = None
-# ΟΡΙΣΜΟΣ ΝΕΩΝ ΟΝΟΜΑΤΩΝ ΜΟΝΤΕΛΩΝ: Pro -> 2.5 Flash -> 1.5 Flash (για συμβατότητα)
-MODEL_PRIORITIES = ["gemini-1.5-pro", "gemini-2.5-flash", "gemini-1.5-flash"] 
-CURRENT_MODEL_NAME = "gemini-1.5-flash" # Default fallback
 
 try:
     # A. Gemini Setup
@@ -96,8 +97,9 @@ except Exception as e:
 
 # --- 2. DRIVE FUNCTIONS (Safe & Smart) ---
 
+@st.cache_data(ttl=3600) # Κρατάει τα δεδομένα στη μνήμη για 1 ώρα
 def load_json_from_drive(filename):
-    """Φόρτωση αρχείων JSON με ασφάλεια"""
+    """Φόρτωση αρχείων JSON με ασφάλεια (με Caching)"""
     if not drive_service: return None
     try:
         results = drive_service.files().list(q=f"name = '{filename}' and trashed = false", fields="files(id)").execute()
@@ -127,6 +129,11 @@ def save_json_to_drive(filename, data):
         else:
             file_metadata = {'name': filename, 'mimeType': 'application/json'}
             drive_service.files().create(body=file_metadata, media_body=media).execute()
+        
+        # ΕΙΔΟΠΟΙΗΣΗ: ΑΚΥΡΩΝΟΥΜΕ ΤΟ CACHE ΓΙΑ ΝΑ ΕΝΗΜΕΡΩΘΟΥΝ ΟΙ ΧΡΗΣΤΕΣ
+        if filename == INDEX_FILE_NAME:
+            load_json_from_drive.clear()
+
     except Exception as e:
         st.error(f"Save Error: {e}")
 
@@ -206,7 +213,7 @@ def log_activity(email, action, detail):
 
 # --- 4. STATE MANAGEMENT ---
 
-# Φόρτωση Index/Users με προστασία (or {})
+# Φόρτωση Index/Users με προστασία (or {}) - ΧΡΗΣΗ CACHED FUNCTION
 if "master_index" not in st.session_state:
     st.session_state.master_index = load_json_from_drive(INDEX_FILE_NAME) or {}
 
@@ -303,6 +310,10 @@ def main_app():
 
     # --- ADMIN DASHBOARD ---
     if user.get('role') == 'admin':
+        # Προσθήκη state για να εμποδίσουμε τους users να ψάχνουν ενώ γίνεται sync
+        if "sync_in_progress" not in st.session_state:
+            st.session_state.sync_in_progress = False
+
         with st.expander("👑 Διαχείριση & Sync", expanded=False):
             tab_users, tab_logs, tab_sync = st.tabs(["Χρήστες", "Logs", "🔄 Smart Sync"])
             
@@ -348,7 +359,10 @@ def main_app():
                     count_new = len(st.session_state.new_files_ids)
                     st.info(f"Έχουν εντοπιστεί {count_new} νέα manuals.")
                     
-                    if st.button(f"🚀 2. Έναρξη Αυτόματου Συγχρονισμού ({count_new} αρχεία)"):
+                    if st.button(f"🚀 2. Έναρξη Αυτόματου Συγχρονισμού ({count_new} αρχεία)", 
+                                 disabled=st.session_state.sync_in_progress):
+                        
+                        st.session_state.sync_in_progress = True # Κλείδωμα
                         progress_bar = st.progress(0)
                         status_text = st.empty()
                         
@@ -367,14 +381,14 @@ def main_app():
                                 path = download_temp_for_ai(fid, fname)
                                 info = identify_model_deep_scan(path)
                                 st.session_state.master_index[fid] = {"name": fname, "model_info": info}
-                                # Save every 1 file for safety
-                                save_json_to_drive(INDEX_FILE_NAME, st.session_state.master_index)
+                                # Save every 1 file for safety (και clear cache)
+                                save_json_to_drive(INDEX_FILE_NAME, st.session_state.master_index) 
                             except Exception as e:
                                 print(f"Error on {fname}: {e}")
                             
                         status_text.success("✅ Ο Συγχρονισμός Ολοκληρώθηκε!")
+                        st.session_state.sync_in_progress = False # Ξεκλείδωμα
                         st.balloons()
-                        # Clear processed list
                         st.session_state.new_files_ids = []
 
     # --- CHAT INTERFACE ---
@@ -386,22 +400,57 @@ def main_app():
     for m in st.session_state.messages: 
         with st.chat_message(m["role"]): st.markdown(m["content"], unsafe_allow_html=True)
 
-    if prompt := st.chat_input("Περιγραφή βλάβης ή κωδικός..."):
+    # ΑΝ Ο ADMIN ΚΑΝΕΙ SYNC, ΑΠΑΓΟΡΕΥΕΤΑΙ ΤΟ CHAT
+    if st.session_state.get('sync_in_progress', False):
+        st.warning("⚠️ Η αναζήτηση είναι προσωρινά μη διαθέσιμη. Ο διαχειριστής ενημερώνει τη βάση δεδομένων.")
+    elif prompt := st.chat_input("Περιγραφή βλάβης ή κωδικός..."):
         # User Message
         st.session_state.messages.append({"role": "user", "content": prompt})
         st.chat_message("user").markdown(prompt)
         
         with st.chat_message("assistant"):
-            # 1. Search Manual
+            # 1. Search Manual (SMART SEARCH LOGIC)
             found_manual_txt = None
-            if "master_index" not in st.session_state: st.session_state.master_index = load_json_from_drive(INDEX_FILE_NAME) or {}
+            # Επαναφορτώνουμε τον index από cache για να έχουμε την τελευταία έκδοση
+            st.session_state.master_index = load_json_from_drive(INDEX_FILE_NAME) or {} 
             
-            # Smart Search
+            # --- Smart Search Logic ---
             matches = []
+            lower_prompt = prompt.lower()
+            cleaned_prompt = re.sub(r'[\s\W_]', '', lower_prompt)
+            prompt_tokens = set(re.findall(r'\b\w{3,}\b', lower_prompt)) # Λέξεις με μήκος >= 3
+
             for fid, data in st.session_state.master_index.items():
                 full_search = (data['name'] + " " + data.get('model_info', '')).lower()
-                if prompt.lower() in full_search:
+                
+                # --- Έλεγχος Α: Καθαρισμένη (Fuzzy) Αντιστοίχιση ---
+                cleaned_search = re.sub(r'[\s\W_]', '', full_search)
+                if cleaned_prompt in cleaned_search:
                     matches.append(data)
+                    continue 
+
+                # --- Έλεγχος Β: Token Matching (Σειρά Λέξεων) ---
+                search_tokens = set(re.findall(r'\b\w{3,}\b', full_search))
+                common_tokens = prompt_tokens.intersection(search_tokens)
+                
+                # Αν βρεθούν όλες οι λέξεις-κλειδιά
+                if len(common_tokens) == len(prompt_tokens) and len(prompt_tokens) > 0:
+                    matches.append(data)
+                    continue 
+                
+                # --- Έλεγχος Γ: Αναζήτηση Κωδικών Σφάλματος (Pattern) ---
+                error_codes = re.findall(r'[a-z]*\d{1,4}', lower_prompt)
+
+                for code in error_codes:
+                    pattern = r'[eifp\s\W_]*' + code
+                    if re.search(pattern, full_search):
+                        matches.append(data)
+                        break 
+            
+            # Αφαίρεση διπλότυπων
+            matches = list({v['name']:v for v in matches}.values())
+            
+            # --- ΤΕΛΟΣ Smart Search Logic ---
             
             # Αν βρεθεί manual
             if matches:
