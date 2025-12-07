@@ -11,11 +11,10 @@ import os
 import time
 import difflib
 from google.api_core import exceptions
-# Εισαγωγή για τις ρυθμίσεις ασφαλείας
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # --- ΡΥΘΜΙΣΕΙΣ ΣΕΛΙΔΑΣ ---
-st.set_page_config(page_title="HVAC Smart V4", page_icon="🧠", layout="centered")
+st.set_page_config(page_title="HVAC Smart V5", page_icon="🧠", layout="centered")
 
 # --- CSS ---
 st.markdown("""<style>
@@ -38,7 +37,6 @@ try:
     # 1. Σύνδεση AI
     if "GEMINI_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
-        # Αυτόματη εύρεση μοντέλων
         try:
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
@@ -73,11 +71,10 @@ with st.sidebar:
     st.divider()
     
     if available_models:
-        # Προεπιλογή το gemini-1.5-pro αν υπάρχει, αλλιώς το πρώτο διαθέσιμο
-        default_index = 0
+        default_idx = 0
         if "gemini-1.5-pro" in available_models:
-            default_index = available_models.index("gemini-1.5-pro")
-        model_option = st.selectbox("Μοντέλο AI", available_models, index=default_index)
+            default_idx = available_models.index("gemini-1.5-pro")
+        model_option = st.selectbox("Μοντέλο AI", available_models, index=default_idx)
     else:
         model_option = st.text_input("Μοντέλο", "gemini-1.5-pro")
         
@@ -123,7 +120,6 @@ def download_file_content(file_id):
     return fh.getvalue()
 
 def find_relevant_file(user_query, files):
-    """Fuzzy Matching"""
     user_query = user_query.lower()
     best_match = None
     highest_score = 0.0
@@ -195,10 +191,10 @@ if prompt:
                     if "Μόνο Αρχεία" in search_source:
                         st.warning("⚠️ Δεν βρέθηκε manual.")
 
-        # 3. AI Generation (ME FIXED INDENTATION & SAFETY)
+        # 3. AI Generation (V5: FIXED CRASH & SAFETY)
         if media_content or "Γενική" in search_source or ("Υβριδικό" in search_source):
             
-            # Ρυθμίσεις Ασφαλείας (Απενεργοποίηση φίλτρων)
+            # Απενεργοποίηση Φίλτρων Ασφαλείας
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -242,17 +238,19 @@ if prompt:
                             safety_settings=safety_settings
                         )
                         
-                        # Έλεγχος για κενή απάντηση (Blocked)
-                        if not response.parts:
+                        # --- CRITICAL FIX: CHECK CANDIDATES BEFORE ACCESSING TEXT ---
+                        if not response.candidates:
                             if response.prompt_feedback:
-                                st.error(f"⚠️ Μπλοκαρίστηκε από το AI. Λόγος: {response.prompt_feedback}")
-                                success = True
+                                st.error(f"⚠️ Μπλοκαρίστηκε (Safety/Other). Λόγος: {response.prompt_feedback}")
+                                success = True # Θεωρούμε ότι απάντησε (με λάθος) για να μην ξαναπροσπαθήσει
                                 break
                             else:
-                                raise Exception("Empty response")
-
-                        st.markdown(response.text)
-                        st.session_state.messages.append({"role": "assistant", "content": response.text})
+                                raise Exception("Empty response (No candidates)")
+                        
+                        # Αν φτάσαμε εδώ, είναι ασφαλές να πάρουμε το κείμενο
+                        ans_text = response.text 
+                        st.markdown(ans_text)
+                        st.session_state.messages.append({"role": "assistant", "content": ans_text})
                         success = True
                         break 
                         
