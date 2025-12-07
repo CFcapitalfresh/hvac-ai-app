@@ -11,7 +11,7 @@ import time
 from google.api_core import exceptions
 
 # --- ΡΥΘΜΙΣΕΙΣ ΣΕΛΙΔΑΣ ---
-st.set_page_config(page_title="HVAC Smart V-Final", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="HVAC Smart V-Final (Safe Save)", page_icon="🤖", layout="wide")
 
 # --- CSS STYLING ---
 st.markdown("""<style>
@@ -72,7 +72,7 @@ try:
 except Exception as e:
     auth_status = f"⚠️ Error: {str(e)}"
 
-# --- ΒΑΣΙΚΕΣ ΛΕΙΤΟΥΡΓΙΕΣ DRIVE (Από Αρχείο 4) ---
+# --- ΒΑΣΙΚΕΣ ΛΕΙΤΟΥΡΓΙΕΣ DRIVE ---
 
 def load_index():
     """Φορτώνει το JSON Ευρετήριο από το Drive"""
@@ -181,7 +181,7 @@ with st.sidebar:
     enable_sync = st.toggle("Ενεργοποίηση Sync", value=False)
     
     if enable_sync:
-        # Λογική Συγχρονισμού (ίδια με αρχείο 4)
+        # Λογική Συγχρονισμού
         if "drive_snapshot" not in st.session_state:
             with st.spinner("⏳ Λήψη λίστας αρχείων από Drive..."):
                 st.session_state.drive_snapshot = get_all_drive_files_meta()
@@ -201,8 +201,11 @@ with st.sidebar:
         
         if new_files_ids:
             st.info(f"🆕 Νέα: {len(new_files_ids)}")
-            # Batch Process (3 files)
-            to_process = new_files_ids[:3]
+            
+            # --- ΣΗΜΑΝΤΙΚΗ ΑΛΛΑΓΗ ΕΔΩ: Processing Batch = 1 ---
+            # Επεξεργασία 1 αρχείου τη φορά για άμεση αποθήκευση
+            to_process = new_files_ids[:1] 
+            
             status_placeholder = st.empty()
             
             for fid in to_process:
@@ -217,7 +220,7 @@ with st.sidebar:
             
             status_placeholder.text("💾 Saving Index...")
             save_index(st.session_state.master_index)
-            st.rerun()
+            st.rerun() # Επανεκκίνηση για το επόμενο
             
         elif deleted_files_ids:
             st.warning("🗑️ Καθαρισμός Διαγραμμένων...")
@@ -254,7 +257,6 @@ with tab1:
         matches = []
         for fid, data in st.session_state.master_index.items():
             full_text = (data['name'] + " " + data['model_info']).lower()
-            # Απλή αναζήτηση αλλά αποτελεσματική
             if query in full_text or any(k in full_text for k in query.split() if len(k)>2):
                 matches.append((fid, data))
         return matches[:1] # Επιστροφή του πιο σχετικού
