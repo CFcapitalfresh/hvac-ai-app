@@ -3,85 +3,62 @@ import google.generativeai as genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
-from google.api_core import exceptions
-import json
+from PIL import Image
 import io
-import time
-import bcrypt
-import datetime
-import re
+import json
 import tempfile
+import time
+from google.api_core import exceptions
 
 # --- ΡΥΘΜΙΣΕΙΣ ΣΕΛΙΔΑΣ ---
-st.set_page_config(page_title="CF Capital Fresh | Ultimate HVAC", page_icon="❄️", layout="wide")
+st.set_page_config(page_title="HVAC Smart V-Final (Safe Save)", page_icon="🤖", layout="wide")
 
-# --- CSS STYLING (Modern UI) ---
+# --- CSS STYLING ---
 st.markdown("""<style>
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} .stDeployButton {display:none;}
-    
-    /* Boxes Styles */
-    .manual-box { 
-        background-color: #e0f2fe; 
-        color: #0369a1; 
-        padding: 15px; 
-        border-radius: 8px; 
-        border-left: 5px solid #0284c7;
-        margin-bottom: 15px;
-    }
-    .ai-box { 
-        background-color: #f3e8ff; 
-        color: #6b21a8; 
-        padding: 15px; 
-        border-radius: 8px; 
-        border-left: 5px solid #9333ea;
-        margin-bottom: 15px;
-    }
-    .warning-box {
-        background-color: #fff7ed;
-        color: #c2410c;
-        padding: 10px;
-        border-radius: 8px;
-        border: 1px solid #fdba74;
-        font-size: 14px;
-    }
+    .source-box { background-color: #d1fae5; color: #065f46; padding: 10px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #34d399;}
+    .status-box { padding: 10px; border-radius: 8px; margin-bottom: 10px; font-size: 14px; border: 1px solid #ddd; }
 </style>""", unsafe_allow_html=True)
 
 # --- GLOBAL CONSTANTS ---
 INDEX_FILE_NAME = "hvac_master_index_v10.json"
-USERS_FILE_NAME = "hvac_users.json"
-LOGS_FILE_NAME = "hvac_logs.json"
 
-# Ορίζουμε τα μοντέλα με σειρά προτεραιότητας: Pro -> 2.5 Flash -> 1.5 Flash (για συμβατότητα)
-MODEL_PRIORITIES = ["gemini-1.5-pro", "gemini-2.5-flash", "gemini-1.5-flash"] 
-CURRENT_MODEL_NAME = "gemini-1.5-flash" # Default fallback
-
-# --- 1. SETUP GOOGLE SERVICES ---
-auth_status = "⏳ Connecting..."
+# --- 1. ΣΥΝΔΕΣΗ & ΕΠΙΛΟΓΗ ΜΟΝΤΕΛΟΥ (AUTO) ---
+auth_status = "⏳ ..."
 drive_service = None
+CURRENT_MODEL_NAME = "gemini-1.5-flash" # Default safe start
 
 try:
-    # A. Gemini Setup
+    # A. Setup Google AI
     if "GEMINI_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_KEY"])
-        # Αυτόματη ανίχνευση του καλύτερου διαθέσιμου μοντέλου
+        
+        # --- ΛΟΓΙΚΗ ΑΥΤΟΜΑΤΗΣ ΕΠΙΛΟΓΗΣ (AUTO-SELECT) ---
         try:
+            # 1. Λήψη όλων των μοντέλων
             all_models = [m.name.replace("models/", "") for m in genai.list_models()]
             
-            best_model_found = False
-            for wanted in MODEL_PRIORITIES:
+            # 2. Λίστα προτίμησης (Από το καλύτερο στο χειρότερο)
+            priority_list = [
+                "gemini-2.0-flash-exp", # Experimental New
+                "gemini-2.0-flash",     # Stable New (αν βγει)
+                "gemini-1.5-pro",       # High Intelligence
+                "gemini-1.5-flash"      # Fast & Cheap
+            ]
+            
+            # 3. Επιλογή
+            detected_model = None
+            for wanted in priority_list:
                 if wanted in all_models:
-                    CURRENT_MODEL_NAME = wanted
-                    best_model_found = True
+                    detected_model = wanted
                     break
             
-            # Ενημερώνουμε τη λίστα προτεραιότητας Fallback με τα πραγματικά διαθέσιμα
-            MODEL_PRIORITIES = [m for m in MODEL_PRIORITIES if m in all_models]
-            if not MODEL_PRIORITIES: MODEL_PRIORITIES = ["gemini-2.5-flash"] # Εσχατη λύση (πιο πιθανό να υπάρχει)
-
+            if detected_model:
+                CURRENT_MODEL_NAME = detected_model
         except Exception as e:
-            auth_status = f"⚠️ Gemini ListModels Error: {str(e)}"
-            
-    # B. Drive Setup
+            print(f"Auto-select failed, using default: {e}")
+
+    # B. Setup Google Drive
     if "GCP_SERVICE_ACCOUNT" in st.secrets:
         gcp_raw = st.secrets["GCP_SERVICE_ACCOUNT"].strip()
         if gcp_raw.startswith("'") and gcp_raw.endswith("'"): gcp_raw = gcp_raw[1:-1]
@@ -95,14 +72,13 @@ try:
 except Exception as e:
     auth_status = f"⚠️ Error: {str(e)}"
 
-# --- 2. DRIVE FUNCTIONS (Safe & Smart) ---
+# --- ΒΑΣΙΚΕΣ ΛΕΙΤΟΥΡΓΙΕΣ DRIVE ---
 
-@st.cache_data(ttl=3600) # Κρατάει τα δεδομένα στη μνήμη για 1 ώρα
-def load_json_from_drive(filename):
-    """Φόρτωση αρχείων JSON με ασφάλεια (με Caching)"""
-    if not drive_service: return None
+def load_index():
+    """Φορτώνει το JSON Ευρετήριο από το Drive"""
+    if not drive_service: return {}
     try:
-        results = drive_service.files().list(q=f"name = '{filename}' and trashed = false", fields="files(id)").execute()
+        results = drive_service.files().list(q=f"name = '{INDEX_FILE_NAME}' and trashed = false", fields="files(id)").execute()
         files = results.get('files', [])
         if files:
             file_id = files[0]['id']
@@ -111,41 +87,34 @@ def load_json_from_drive(filename):
             downloader = MediaIoBaseDownload(fh, request)
             done = False
             while done is False: _, done = downloader.next_chunk()
-            content = fh.getvalue().decode('utf-8')
-            if not content: return None
-            return json.loads(content)
+            return json.loads(fh.getvalue().decode('utf-8'))
     except: pass
-    return None
+    return {} 
 
-def save_json_to_drive(filename, data):
-    """Αποθήκευση JSON πίσω στο Drive"""
+def save_index(data):
+    """Αποθηκεύει το JSON Ευρετήριο πίσω στο Drive"""
     if not drive_service: return
     try:
-        results = drive_service.files().list(q=f"name = '{filename}' and trashed = false").execute()
+        results = drive_service.files().list(q=f"name = '{INDEX_FILE_NAME}' and trashed = false").execute()
         files = results.get('files', [])
-        media = MediaIoBaseUpload(io.BytesIO(json.dumps(data, indent=2).encode('utf-8')), mimetype='application/json')
+        file_metadata = {'name': INDEX_FILE_NAME, 'mimeType': 'application/json'}
+        media = MediaIoBaseUpload(io.BytesIO(json.dumps(data).encode('utf-8')), mimetype='application/json')
         if files:
             drive_service.files().update(fileId=files[0]['id'], media_body=media).execute()
         else:
-            file_metadata = {'name': filename, 'mimeType': 'application/json'}
             drive_service.files().create(body=file_metadata, media_body=media).execute()
-        
-        # ΕΙΔΟΠΟΙΗΣΗ: ΑΚΥΡΩΝΟΥΜΕ ΤΟ CACHE ΓΙΑ ΝΑ ΕΝΗΜΕΡΩΘΟΥΝ ΟΙ ΧΡΗΣΤΕΣ
-        if filename == INDEX_FILE_NAME:
-            load_json_from_drive.clear()
-
     except Exception as e:
-        st.error(f"Save Error: {e}")
+        print(f"Save Error: {e}")
 
-def get_all_pdf_files():
-    """Φέρνει όλα τα PDF/Εικόνες από το Drive για το Sync"""
+def get_all_drive_files_meta():
+    """Φέρνει λίστα με ΟΛΑ τα αρχεία του Drive (για το Sync)"""
     if not drive_service: return []
     all_files = []
     page_token = None
     try:
         while True:
             response = drive_service.files().list(
-                q="(mimeType = 'application/pdf' or mimeType = 'image/jpeg') and trashed = false",
+                q="mimeType != 'application/vnd.google-apps.folder' and trashed = false",
                 fields='nextPageToken, files(id, name)',
                 pageSize=1000,
                 pageToken=page_token
@@ -156,8 +125,8 @@ def get_all_pdf_files():
         return all_files
     except: return []
 
-def download_temp_for_ai(file_id, file_name):
-    """Κατεβάζει προσωρινά για AI Analysis"""
+def download_temp(file_id, file_name):
+    """Κατεβάζει προσωρινά ένα αρχείο για ανάλυση"""
     req = drive_service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, req)
@@ -168,347 +137,187 @@ def download_temp_for_ai(file_id, file_name):
         tmp.write(fh.getvalue())
         return tmp.name
 
-def identify_model_deep_scan(file_path):
-    """DEEP SCAN: Βλέπει τις πρώτες σελίδες για ακρίβεια"""
+def identify_model_with_ai(file_path):
+    """AI Vision: Βλέπει την πρώτη σελίδα και βρίσκει το Μοντέλο"""
     try:
-        # Χρησιμοποιούμε το CURRENT_MODEL_NAME που είναι το καλύτερο διαθέσιμο
-        model = genai.GenerativeModel(CURRENT_MODEL_NAME) 
+        # Χρήση του δυναμικού μοντέλου
+        model = genai.GenerativeModel(CURRENT_MODEL_NAME)
         gfile = genai.upload_file(file_path)
-        
-        # Αναμονή επεξεργασίας από Google
         while gfile.state.name == "PROCESSING": 
-            time.sleep(1)
+            time.sleep(0.5)
             gfile = genai.get_file(gfile.name)
         
-        prompt = """
-        Είσαι ειδικός HVAC.
-        Σκάναρε τις πρώτες σελίδες του αρχείου.
-        Εντόπισε: 1) Κατασκευαστή (Brand), 2) Σειρά Μοντέλου (Series/Model Number).
-        Απάντησε ΜΟΝΟ με τη μορφή: "Brand Model".
-        Αν δεν βρεις τίποτα, γράψε "Unknown".
-        """
+        prompt = "Διάβασε την πρώτη σελίδα. Ποια είναι η Μάρκα και το Μοντέλο; Απάντησε ΜΟΝΟ με Μάρκα/Μοντέλο. Αν δεν φαίνεται, γράψε 'Άγνωστο'."
         response = model.generate_content([prompt, gfile])
         return response.text.strip()
-    except: 
-        return "Manual Detection Failed"
+    except:
+        return "Manual (Auto-detect failed)"
 
-# --- 3. SECURITY & LOGS ---
-
-def hash_password(password): return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
-def check_password(password, hashed): 
-    try: return bcrypt.checkpw(password.encode(), hashed.encode())
-    except: return False
-
-def log_activity(email, action, detail):
-    logs = load_json_from_drive(LOGS_FILE_NAME) or []
-    entry = {
-        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "user": email,
-        "action": action,
-        "detail": detail
-    }
-    logs.append(entry)
-    save_json_to_drive(LOGS_FILE_NAME, logs)
-
-# --- 4. STATE MANAGEMENT ---
-
-# Φόρτωση Index/Users με προστασία (or {}) - ΧΡΗΣΗ CACHED FUNCTION
-if "master_index" not in st.session_state:
-    st.session_state.master_index = load_json_from_drive(INDEX_FILE_NAME) or {}
-
-if "users_db" not in st.session_state:
-    st.session_state.users_db = load_json_from_drive(USERS_FILE_NAME) or {}
-
-if "user_info" not in st.session_state:
-    st.session_state.user_info = None
-
-if "new_files_ids" not in st.session_state:
-    st.session_state.new_files_ids = []
-
-# --- AI Fallback Logic ---
-def get_ai_response_with_fallback(full_prompt, user_email):
-    """
-    Δοκιμάζει όλα τα μοντέλα στη λίστα προτεραιότητας.
-    Αν αποτύχει κάποιο (π.χ. 404/Rate Limit/Timeout), δοκιμάζει το επόμενο.
-    """
-    for model_name in MODEL_PRIORITIES:
-        try:
-            model = genai.GenerativeModel(model_name)
-            resp = model.generate_content(full_prompt)
-            # Επιτυχία: Επιστρέφουμε την απάντηση και το όνομα του μοντέλου που λειτούργησε
-            return resp, model_name 
-        
-        except exceptions.ResourceExhausted:
-            # Σφάλμα λόγω υπερβολικού φόρτου (Rate Limit / Timeout)
-            st.warning(f"⚠️ Το μοντέλο {model_name} είναι απασχολημένο ή έληξε ο χρόνος (Resource Exhausted). Δοκιμάζω το επόμενο...")
-            log_activity(user_email, "AI_FALLBACK_FAIL", f"Model {model_name} failed (Timeout/Rate Limit)")
-            continue
-        
-        except Exception as e:
-            # Γενικό σφάλμα (Πιάνει και το 404 Not Found)
-            st.warning(f"🚨 Σφάλμα με το μοντέλο {model_name}: {e}. Δοκιμάζω το επόμενο.")
-            log_activity(user_email, "AI_FALLBACK_FAIL", f"Model {model_name} failed: {str(e)}")
-            continue
+# --- SIDEBAR: SYNC & STATUS ---
+with st.sidebar:
+    st.header("⚙️ Διαχείριση")
+    st.caption(auth_status)
     
-    # Αν όλα τα μοντέλα αποτύχουν
-    return None, None
-# --- ΤΕΛΟΣ AI Fallback Logic ---
-
-# --- 5. UI PAGES ---
-
-def login_page():
-    st.title("🔐 CF Capital Fresh Portal")
-    if auth_status != "✅ Online": st.warning(f"System Status: {auth_status}")
-    
-    t1, t2 = st.tabs(["Είσοδος", "Εγγραφή"])
-    
-    with t1:
-        email = st.text_input("Email", key="l_email").lower().strip()
-        password = st.text_input("Password", type="password", key="l_pass")
-        if st.button("Login"):
-            users = load_json_from_drive(USERS_FILE_NAME) or {}
-            if email in users and check_password(password, users[email]['password']):
-                if users[email].get('status') == 'active':
-                    st.session_state.user_info = users[email]
-                    st.session_state.user_info['email'] = email
-                    log_activity(email, "LOGIN", "Success")
-                    st.rerun()
-                else: st.warning("Ο λογαριασμός είναι υπό έγκριση ή ανενεργός.")
-            else: st.error("Λάθος στοιχεία.")
-
-    with t2:
-        st.write("Νέα Εγγραφή")
-        new_email = st.text_input("Email Εγγραφής").lower().strip()
-        new_pass = st.text_input("Κωδικός (min 8 chars, γράμματα & αριθμοί)", type="password")
-        if st.button("Εγγραφή"):
-            users = load_json_from_drive(USERS_FILE_NAME) or {}
-            # Password validation logic could go here
-            if new_email not in users:
-                users[new_email] = {
-                    "name": "New User", 
-                    "password": hash_password(new_pass), 
-                    "role": "user", 
-                    "status": "pending", 
-                    "joined": str(datetime.date.today())
-                }
-                save_json_to_drive(USERS_FILE_NAME, users)
-                st.success("Εγγραφή επιτυχής! Περιμένετε έγκριση.")
-            else:
-                st.error("Το email υπάρχει ήδη.")
-
-def main_app():
-    user = st.session_state.user_info
-    
-    # Header Info
-    c1, c2 = st.columns([3,1])
-    # Εμφάνιση της λίστας προτεραιότητας
-    with c1: st.caption(f"👤 {user.get('name')} | 🤖 Brain Priority: {', '.join(MODEL_PRIORITIES)}")
-    with c2: 
-        if st.button("Logout"): 
-            st.session_state.user_info = None; st.rerun()
-
-    # --- ADMIN DASHBOARD ---
-    if user.get('role') == 'admin':
-        # Προσθήκη state για να εμποδίσουμε τους users να ψάχνουν ενώ γίνεται sync
-        if "sync_in_progress" not in st.session_state:
-            st.session_state.sync_in_progress = False
-
-        with st.expander("👑 Διαχείριση & Sync", expanded=False):
-            tab_users, tab_logs, tab_sync = st.tabs(["Χρήστες", "Logs", "🔄 Smart Sync"])
-            
-            with tab_users:
-                users = load_json_from_drive(USERS_FILE_NAME) or {}
-                pending_count = 0
-                for email, data in users.items():
-                    if data.get('status') == 'pending':
-                        pending_count += 1
-                        c_a, c_b = st.columns(2)
-                        c_a.write(f"⚠️ **{data.get('name')}** ({email})")
-                        if c_b.button("✅ Έγκριση", key=email):
-                            users[email]['status'] = 'active'
-                            save_json_to_drive(USERS_FILE_NAME, users)
-                            st.rerun()
-                if pending_count == 0: st.success("Κανένας χρήστης σε αναμονή.")
-            
-            with tab_logs:
-                if st.button("Refresh Logs"): pass
-                st.dataframe(load_json_from_drive(LOGS_FILE_NAME) or [])
-
-            with tab_sync:
-                st.write("#### 📡 Έλεγχος Βάσης Δεδομένων")
-                
-                # Κουμπί 1: Σάρωση
-                if st.button("🔍 1. Σάρωση Drive για νέα αρχεία"):
-                    with st.spinner("Γίνεται καταγραφή αρχείων..."):
-                        drive_files = get_all_pdf_files()
-                        st.session_state.drive_snapshot = drive_files
-                        
-                        # Compare with Index
-                        index = load_json_from_drive(INDEX_FILE_NAME) or {}
-                        st.session_state.master_index = index
-                        
-                        drive_ids = {f['id']: f['name'] for f in drive_files}
-                        indexed_ids = set(index.keys())
-                        
-                        st.session_state.new_files_ids = list(set(drive_ids.keys()) - indexed_ids)
-                        st.success(f"Drive: {len(drive_ids)} | Index: {len(indexed_ids)} | 🆕 Νέα: {len(st.session_state.new_files_ids)}")
-
-                # Κουμπί 2: Μαζική Επεξεργασία (Batch Process)
-                if "new_files_ids" in st.session_state and st.session_state.new_files_ids:
-                    count_new = len(st.session_state.new_files_ids)
-                    st.info(f"Έχουν εντοπιστεί {count_new} νέα manuals.")
-                    
-                    if st.button(f"🚀 2. Έναρξη Αυτόματου Συγχρονισμού ({count_new} αρχεία)", 
-                                 disabled=st.session_state.sync_in_progress):
-                        
-                        st.session_state.sync_in_progress = True # Κλείδωμα
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        
-                        # Loop processing
-                        for i, fid in enumerate(st.session_state.new_files_ids):
-                            # Find name
-                            fname = next((f['name'] for f in st.session_state.drive_snapshot if f['id'] == fid), "Unknown")
-                            
-                            # UI Update
-                            progress = (i + 1) / count_new
-                            progress_bar.progress(progress)
-                            status_text.text(f"🔄 ({i+1}/{count_new}) Ανάλυση: {fname} ...")
-                            
-                            # AI Action
-                            try:
-                                path = download_temp_for_ai(fid, fname)
-                                info = identify_model_deep_scan(path)
-                                st.session_state.master_index[fid] = {"name": fname, "model_info": info}
-                                # Save every 1 file for safety (και clear cache)
-                                save_json_to_drive(INDEX_FILE_NAME, st.session_state.master_index) 
-                            except Exception as e:
-                                print(f"Error on {fname}: {e}")
-                            
-                        status_text.success("✅ Ο Συγχρονισμός Ολοκληρώθηκε!")
-                        st.session_state.sync_in_progress = False # Ξεκλείδωμα
-                        st.balloons()
-                        st.session_state.new_files_ids = []
-
-    # --- CHAT INTERFACE ---
+    # ΕΝΔΕΙΞΗ ΜΟΝΤΕΛΟΥ (Ζωντανή)
     st.divider()
-    tech_mode = st.radio("Ειδικότητα:", ["❄️ Κλιματισμός", "🧊 Ψύξη", "🔥 Καυστήρες"], horizontal=True)
+    st.subheader("🧠 AI Brain Status")
+    if "2.0" in CURRENT_MODEL_NAME:
+        st.success(f"🚀 Running: **{CURRENT_MODEL_NAME}**")
+        st.caption("Next-Gen Speed & Vision")
+    elif "pro" in CURRENT_MODEL_NAME:
+        st.info(f"💎 Running: **{CURRENT_MODEL_NAME}**")
+        st.caption("High Reasoning")
+    else:
+        st.warning(f"⚡ Running: **{CURRENT_MODEL_NAME}**")
+        st.caption("Standard Fast Model")
+        
+    st.divider()
 
-    if "messages" not in st.session_state: st.session_state.messages = []
+    # Φόρτωση Index
+    if "master_index" not in st.session_state:
+        st.session_state.master_index = load_index()
+        
+    st.subheader("🔄 Συγχρονισμός (Sync)")
+    enable_sync = st.toggle("Ενεργοποίηση Sync", value=False)
     
-    for m in st.session_state.messages: 
-        with st.chat_message(m["role"]): st.markdown(m["content"], unsafe_allow_html=True)
+    if enable_sync:
+        # Λογική Συγχρονισμού
+        if "drive_snapshot" not in st.session_state:
+            with st.spinner("⏳ Λήψη λίστας αρχείων από Drive..."):
+                st.session_state.drive_snapshot = get_all_drive_files_meta()
+        
+        drive_files_map = {f['id']: f['name'] for f in st.session_state.drive_snapshot}
+        indexed_ids = set(st.session_state.master_index.keys())
+        drive_ids = set(drive_files_map.keys())
+        
+        new_files_ids = list(drive_ids - indexed_ids)
+        deleted_files_ids = list(indexed_ids - drive_ids)
+        
+        total = len(drive_ids)
+        indexed = len(indexed_ids) - len(deleted_files_ids)
+        
+        st.progress(min(indexed / total if total > 0 else 0, 1.0))
+        st.write(f"📊 **Index:** {indexed} / {total}")
+        
+        if new_files_ids:
+            st.info(f"🆕 Νέα: {len(new_files_ids)}")
+            
+            # --- ΣΗΜΑΝΤΙΚΗ ΑΛΛΑΓΗ ΕΔΩ: Processing Batch = 1 ---
+            # Επεξεργασία 1 αρχείου τη φορά για άμεση αποθήκευση
+            to_process = new_files_ids[:1] 
+            
+            status_placeholder = st.empty()
+            
+            for fid in to_process:
+                fname = drive_files_map[fid]
+                status_placeholder.markdown(f"🔍 AI Ανάλυση: `{fname}`...")
+                try:
+                    tmp_path = download_temp(fid, fname)
+                    model_info = identify_model_with_ai(tmp_path)
+                    st.session_state.master_index[fid] = {"name": fname, "model_info": model_info}
+                except Exception as e:
+                    print(f"Error {fname}: {e}")
+            
+            status_placeholder.text("💾 Saving Index...")
+            save_index(st.session_state.master_index)
+            st.rerun() # Επανεκκίνηση για το επόμενο
+            
+        elif deleted_files_ids:
+            st.warning("🗑️ Καθαρισμός Διαγραμμένων...")
+            for did in deleted_files_ids:
+                del st.session_state.master_index[did]
+            save_index(st.session_state.master_index)
+            st.rerun()
+        else:
+            st.success("✅ System Up to Date")
+            if "drive_snapshot" in st.session_state:
+                del st.session_state.drive_snapshot
 
-    # ΑΝ Ο ADMIN ΚΑΝΕΙ SYNC, ΑΠΑΓΟΡΕΥΕΤΑΙ ΤΟ CHAT
-    if st.session_state.get('sync_in_progress', False):
-        st.warning("⚠️ Η αναζήτηση είναι προσωρινά μη διαθέσιμη. Ο διαχειριστής ενημερώνει τη βάση δεδομένων.")
-    elif prompt := st.chat_input("Περιγραφή βλάβης ή κωδικός..."):
-        # User Message
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        st.chat_message("user").markdown(prompt)
+# --- MAIN APP ---
+st.title("🤖 HVAC Smart Expert (Auto-AI)")
+
+# Tabs
+tab1, tab2 = st.tabs(["💬 Chat & Διάγνωση", "🗂️ Βάση Δεδομένων"])
+
+with tab2:
+    st.metric("Σύνολο Manuals", len(st.session_state.master_index))
+    st.json(dict(list(st.session_state.master_index.items())[:10]))
+
+with tab1:
+    # Επιλογή Ρόλου
+    c1, c2, c3 = st.columns(3)
+    if "tech_mode" not in st.session_state: st.session_state.tech_mode = "Τεχνικός HVAC"
+    if c1.button("❄️ AC"): st.session_state.tech_mode = "Τεχνικός Κλιματισμού"
+    if c2.button("🧊 Ψύξη"): st.session_state.tech_mode = "Ψυκτικός"
+    if c3.button("🔥 Αέριο"): st.session_state.tech_mode = "Τεχνικός Καυστήρων"
+
+    # Search Function
+    def search_index(query):
+        query = query.lower()
+        matches = []
+        for fid, data in st.session_state.master_index.items():
+            full_text = (data['name'] + " " + data['model_info']).lower()
+            if query in full_text or any(k in full_text for k in query.split() if len(k)>2):
+                matches.append((fid, data))
+        return matches[:1] # Επιστροφή του πιο σχετικού
+
+    # Chat History
+    if "messages" not in st.session_state: st.session_state.messages = []
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]): st.markdown(m["content"])
+
+    # User Input
+    user_input = st.chat_input("Περιέγραψε τη βλάβη ή τον κωδικό...")
+
+    if user_input:
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"): st.markdown(user_input)
         
         with st.chat_message("assistant"):
-            # 1. Search Manual (SMART SEARCH LOGIC)
-            found_manual_txt = None
-            # Επαναφορτώνουμε τον index από cache για να έχουμε την τελευταία έκδοση
-            st.session_state.master_index = load_json_from_drive(INDEX_FILE_NAME) or {} 
+            found_data = None
+            media_items = []
             
-            # --- Smart Search Logic ---
-            matches = []
-            lower_prompt = prompt.lower()
-            cleaned_prompt = re.sub(r'[\s\W_]', '', lower_prompt)
-            prompt_tokens = set(re.findall(r'\b\w{3,}\b', lower_prompt)) # Λέξεις με μήκος >= 3
-
-            for fid, data in st.session_state.master_index.items():
-                full_search = (data['name'] + " " + data.get('model_info', '')).lower()
-                
-                # --- Έλεγχος Α: Καθαρισμένη (Fuzzy) Αντιστοίχιση ---
-                cleaned_search = re.sub(r'[\s\W_]', '', full_search)
-                if cleaned_prompt in cleaned_search:
-                    matches.append(data)
-                    continue 
-
-                # --- Έλεγχος Β: Token Matching (Σειρά Λέξεων) ---
-                search_tokens = set(re.findall(r'\b\w{3,}\b', full_search))
-                common_tokens = prompt_tokens.intersection(search_tokens)
-                
-                # Αν βρεθούν όλες οι λέξεις-κλειδιά
-                if len(common_tokens) == len(prompt_tokens) and len(prompt_tokens) > 0:
-                    matches.append(data)
-                    continue 
-                
-                # --- Έλεγχος Γ: Αναζήτηση Κωδικών Σφάλματος (Pattern) ---
-                error_codes = re.findall(r'[a-z]*\d{1,4}', lower_prompt)
-
-                for code in error_codes:
-                    pattern = r'[eifp\s\W_]*' + code
-                    if re.search(pattern, full_search):
-                        matches.append(data)
-                        break 
+            # 1. Αναζήτηση στο Index
+            if st.session_state.master_index:
+                hits = search_index(user_input)
+                if hits:
+                    fid, data = hits[0]
+                    found_data = f"{data['model_info']} ({data['name']})"
+                    st.markdown(f'<div class="source-box">📖 Βρέθηκε Manual: {found_data}</div>', unsafe_allow_html=True)
+                    
+                    # Κατέβασμα για το Chat Context
+                    try:
+                        with st.spinner("📥 Φόρτωση manual για ανάλυση..."):
+                            path = download_temp(fid, data['name'])
+                            gf = genai.upload_file(path)
+                            while gf.state.name == "PROCESSING": 
+                                time.sleep(0.5)
+                                gf = genai.get_file(gf.name)
+                            media_items.append(gf)
+                    except: 
+                        st.warning("⚠️ Δεν μπόρεσα να ανοίξω το αρχείο, συνεχίζω με γενική γνώση.")
             
-            # Αφαίρεση διπλότυπων
-            matches = list({v['name']:v for v in matches}.values())
-            
-            # --- ΤΕΛΟΣ Smart Search Logic ---
-            
-            # Αν βρεθεί manual
-            if matches:
-                data = matches[0]
-                found_manual_txt = f"{data.get('model_info')} ({data['name']})"
-                log_activity(user['email'], "SEARCH_HIT", found_manual_txt)
+            # 2. Απάντηση AI (Dynamic Model)
+            try:
+                model = genai.GenerativeModel(CURRENT_MODEL_NAME)
                 
-                # Εμφάνιση ειδοποίησης Manual
-                display_html = f"""
-                <div class="manual-box">
-                    <b>📘 Βρέθηκε Manual:</b> {found_manual_txt}<br>
-                    <i>Το AI θα απαντήσει βάσει αυτού.</i>
-                </div>
+                # Context Prompting
+                context_str = f"Έχεις το manual: {found_data}" if found_data else "Δεν βρέθηκε συγκεκριμένο manual, χρησιμοποίησε γενική γνώση."
+                
+                full_prompt = f"""
+                Είσαι έμπειρος {st.session_state.tech_mode}.
+                ΟΔΗΓΙΕΣ:
+                1. {context_str}
+                2. Απάντησε στα Ελληνικά, σύντομα και τεχνικά.
+                3. Αν είναι κωδικός βλάβης, δώσε πιθανές αιτίες και λύσεις.
+                
+                ΕΡΩΤΗΣΗ ΤΕΧΝΙΚΟΥ: {user_input}
                 """
-                st.markdown(display_html, unsafe_allow_html=True)
-                st.session_state.messages.append({"role": "assistant", "content": display_html})
-            else:
-                log_activity(user['email'], "SEARCH_MISS", prompt)
-                no_man_html = '<div class="warning-box">⚠️ Δεν βρέθηκε συγκεκριμένο manual. Απάντηση βάσει γενικής γνώσης.</div>'
-                st.markdown(no_man_html, unsafe_allow_html=True)
-                st.session_state.messages.append({"role": "assistant", "content": no_man_html})
-
-            # 2. AI Generation (Hybrid) - ΧΡΗΣΗ ΤΗΣ ΣΥΝΑΡΤΗΣΗΣ FALLBACK
-            
-            full_prompt = f"""
-            Είσαι έμπειρος τεχνικός {tech_mode}.
-            Ερώτηση Πελάτη: "{prompt}"
-            
-            ΔΕΔΟΜΕΝΑ MANUAL: {found_manual_txt if found_manual_txt else "Κανένα (Χρήση Γενικής Γνώσης)"}
-            
-            ΟΔΗΓΙΕΣ:
-            1. Αν υπάρχει Manual, εξήγησε τι λέει ο κατασκευαστής.
-            2. Πρόσθεσε τη δική σου εμπειρία (Γενική Γνώση) για την επίλυση.
-            3. Χώρισε την απάντηση ξεκάθαρα.
-            """
-            
-            with st.spinner("🧠 Ανάλυση..."):
-                resp, used_model = get_ai_response_with_fallback(full_prompt, user['email'])
-            
-            # Εμφάνιση αποτελέσματος ΜΟΝΟ αν η κλήση ήταν επιτυχής
-            if resp:
-                final_html = f"""
-                <div class="ai-box">
-                    <b>🤖 Απάντηση AI ({used_model}):</b><br>
-                    {resp.text}
-                </div>
-                """
-                st.markdown(final_html, unsafe_allow_html=True)
-                st.session_state.messages.append({"role": "assistant", "content": final_html})
-            else:
-                # Εάν όλα τα μοντέλα απέτυχαν
-                final_html = '<div class="warning-box">🛑 Αποτυχία: Όλα τα διαθέσιμα AI μοντέλα απέτυχαν να απαντήσουν. Δοκιμάστε ξανά αργότερα.</div>'
-                st.markdown(final_html, unsafe_allow_html=True)
-                st.session_state.messages.append({"role": "assistant", "content": final_html})
-
-
-# --- ENTRY ---
-if st.session_state.user_info is None:
-    login_page()
-else:
-    main_app()
+                
+                with st.spinner(f"🧠 Σκέφτομαι (με {CURRENT_MODEL_NAME})..."):
+                    resp = model.generate_content([full_prompt, *media_items])
+                    st.markdown(resp.text)
+                    st.session_state.messages.append({"role": "assistant", "content": resp.text})
+                    
+            except Exception as e:
+                st.error(f"Error: {e}")
