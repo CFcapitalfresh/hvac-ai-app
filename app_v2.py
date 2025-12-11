@@ -20,27 +20,49 @@ st.markdown("""<style>
 
 # --- GLOBAL SETTINGS ---
 USERS_DB_FILE = "local_users_db.json" 
-CURRENT_MODEL_NAME = "gemini-pro" 
+CURRENT_MODEL_NAME = "gemini-pro" # Fallback αρχικό
 
-# --- 1. SETUP GEMINI AI (AUTO-DISCOVERY) ---
+# --- 1. SETUP GEMINI AI (UNIVERSAL AUTO-SELECTOR) ---
 if "GEMINI_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_KEY"])
+    
+    # Απενεργοποίηση φίλτρων για να μην κόβει manuals
+    SAFETY_SETTINGS = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+
     try:
+        # --- ΛΟΓΙΚΗ ΑΥΤΟΜΑΤΗΣ ΕΠΙΛΟΓΗΣ (AUTO-DISCOVERY) ---
         all_models = list(genai.list_models())
+        # Κρατάμε μόνο μοντέλα που παράγουν κείμενο (generateContent)
         valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
-        priority_list = ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-1.0-pro", "models/gemini-pro"]
+        
+        # Λίστα Προτεραιότητας (Από το καλύτερο/γρηγορότερο στο πιο συμβατό)
+        priority_list = [
+            "models/gemini-1.5-flash",
+            "models/gemini-1.5-pro",
+            "models/gemini-1.0-pro",
+            "models/gemini-pro"
+        ]
         
         found_model = None
         for p in priority_list:
             if p in valid_models:
                 found_model = p
                 break
-        if not found_model and valid_models: found_model = valid_models[0]
+        
+        # Αν δεν βρεθεί κανένα από τη λίστα, πάρε το πρώτο διαθέσιμο
+        if not found_model and valid_models:
+            found_model = valid_models[0]
             
         if found_model:
             CURRENT_MODEL_NAME = found_model
+            # st.toast(f"✅ AI Connected: {found_model.replace('models/', '')}", icon="🤖")
         else:
-            st.error("❌ Δεν βρέθηκαν συμβατά μοντέλα.")
+            st.error("❌ Σφάλμα: Δεν βρέθηκαν διαθέσιμα μοντέλα στο API Key σου.")
             
     except Exception as e:
         st.error(f"⚠️ Σφάλμα σύνδεσης AI: {e}")
@@ -63,7 +85,6 @@ def hash_pass(password):
 
 # --- 3. HELPER FUNCTIONS ---
 def save_uploaded_file(uploaded_file):
-    """Αποθηκεύει ΕΝΑ αρχείο"""
     try:
         name = uploaded_file.name if hasattr(uploaded_file, 'name') else "camera_capture.jpg"
         suffix = os.path.splitext(name)[1]
@@ -76,44 +97,32 @@ def save_uploaded_file(uploaded_file):
         return None
 
 def analyze_media_and_chat(prompt, file_paths_list, history, tech_type):
-    """Η καρδιά του AI: Δέχεται ΛΙΣΤΑ αρχείων"""
+    """Η καρδιά του AI: Auto-Select Model + Safety Bypass"""
     try:
         model = genai.GenerativeModel(CURRENT_MODEL_NAME)
         content_parts = []
         
         # --- SYSTEM PROMPT ---
         system_msg = f"""
-        Είσαι έμπειρος Τεχνικός {tech_type} και αναλυτής.
-        
-        ΣΤΟΧΟΣ: Να δώσεις την καλύτερη δυνατή τεχνική λύση, συνδυάζοντας τα Manuals/Φωτογραφίες με την Εμπειρία σου.
+        Είσαι έμπειρος Τεχνικός {tech_type}.
+        ΣΤΟΧΟΣ: Τεχνική λύση συνδυάζοντας Manuals + Εμπειρία.
         
         ΚΑΝΟΝΕΣ:
-        1. **ΕΛΕΓΧΟΣ ΑΡΧΕΙΩΝ (Anti-Confusion):**
-           - Αν υπάρχουν πολλαπλά αρχεία, συνδύασε τις πληροφορίες.
-           - ΠΡΟΣΟΧΗ: Μην μπερδεύεις Κωδικούς Βλάβης (Error Codes) με Κωδικούς Ανταλλακτικών (Part Numbers). Διάβασε τον τίτλο του πίνακα!
-           
-        2. **ΓΕΝΙΚΗ ΓΝΩΣΗ (Υποχρεωτική):**
-           - Ακόμα κι αν βρεις τη λύση στο manual, ΠΡΟΣΘΕΣΕ τη δική σου εμπειρία.
-           - Αν τα αρχεία δεν έχουν την απάντηση, ΑΠΑΝΤΗΣΕ ΚΑΝΟΝΙΚΑ βάσει της γενικής σου γνώσης.
-           
-        3. **ΔΟΜΗ ΑΠΑΝΤΗΣΗΣ:**
-           - Ξεκίνα με: "Σύμφωνα με τα αρχεία..." (αν βρήκες κάτι).
-           - Συνέχισε με: "Βάσει της εμπειρίας μου..." ή "Γενικά σε τέτοιες περιπτώσεις...".
-           - Απάντησε Ελληνικά, σύντομα και πρακτικά.
+        1. **Anti-Confusion:** Μην μπερδεύεις Κωδικούς Βλάβης με Κωδικούς Ανταλλακτικών.
+        2. **Υβριδική Γνώση:** Αν το manual δεν έχει τη λύση, απάντησε βάσει ΕΜΠΕΙΡΙΑΣ.
+        3. **Γλώσσα:** Ελληνικά, σύντομα και τεχνικά.
         """
         content_parts.append(system_msg)
         
-        # Upload ALL Files
+        # Upload Files
         if file_paths_list:
             for fpath in file_paths_list:
                 gfile = genai.upload_file(fpath)
-                # Περίμενε να επεξεργαστεί το κάθε αρχείο
                 while gfile.state.name == "PROCESSING":
                     time.sleep(0.5)
                     gfile = genai.get_file(gfile.name)
                 content_parts.append(gfile)
-            
-            content_parts.append("Ανάλυσε τα επισυναπτόμενα αρχεία.")
+            content_parts.append("Ανάλυσε τα δεδομένα.")
 
         # History
         for msg in history:
@@ -123,125 +132,110 @@ def analyze_media_and_chat(prompt, file_paths_list, history, tech_type):
         # Current Prompt
         content_parts.append(f"User Question: {prompt}")
 
-        response = model.generate_content(content_parts)
-        return response.text
+        # Κλήση με απενεργοποιημένα φίλτρα
+        response = model.generate_content(
+            content_parts,
+            safety_settings=SAFETY_SETTINGS
+        )
+        
+        if response.candidates:
+            return response.text
+        else:
+            return f"⚠️ Μπλοκαρίστηκε (Λόγος: {response.prompt_feedback})"
         
     except Exception as e:
-        return f"⚠️ Σφάλμα AI ({CURRENT_MODEL_NAME}): {str(e)}"
+        return f"⚠️ Σφάλμα Συστήματος: {str(e)}"
 
-# --- 4. AUTHENTICATION SCREENS ---
+# --- 4. LOGIN ---
 if "user" not in st.session_state: st.session_state.user = None
 
 def login_screen():
     st.title("🔐 HVAC Expert Login")
     users = load_users()
     
-    tab1, tab2 = st.tabs(["Είσοδος", "Εγγραφή"])
-    
-    with tab1:
+    t1, t2 = st.tabs(["Είσοδος", "Εγγραφή"])
+    with t1:
         email = st.text_input("Email").lower().strip()
-        password = st.text_input("Password", type="password")
+        passw = st.text_input("Password", type="password")
         if st.button("Login"):
-            if email == "admin" and password == "admin":
-                st.session_state.user = {"email": "admin", "role": "admin", "name": "Master Admin"}
-                st.rerun()
-            if email in users and users[email]["password"] == hash_pass(password):
-                st.session_state.user = users[email]
-                st.rerun()
-            else: st.error("Λάθος στοιχεία.")
-
-    with tab2:
-        new_email = st.text_input("New Email").lower().strip()
-        new_name = st.text_input("Ονοματεπώνυμο")
-        new_pass = st.text_input("New Password", type="password")
-        if st.button("Δημιουργία Λογαριασμού"):
-            if new_email in users: st.error("Το email υπάρχει ήδη.")
+            if email=="admin" and passw=="admin":
+                st.session_state.user={"email":"admin","role":"admin","name":"Master"}; st.rerun()
+            if email in users and users[email]["password"]==hash_pass(passw):
+                st.session_state.user=users[email]; st.rerun()
+            else: st.error("Λάθος στοιχεία")
+    with t2:
+        new_e = st.text_input("New Email").lower().strip()
+        new_n = st.text_input("Ονοματεπώνυμο")
+        new_p = st.text_input("New Password", type="password")
+        if st.button("Δημιουργία"):
+            if new_e in users: st.error("Υπάρχει ήδη")
             else:
-                users[new_email] = {"email": new_email, "name": new_name, "password": hash_pass(new_pass), "role": "user", "joined": str(datetime.now())}
-                save_users(users)
-                st.success("Επιτυχία! Κάντε είσοδο.")
+                users[new_e]={"email":new_e,"name":new_n,"password":hash_pass(new_p),"role":"user","joined":str(datetime.now())}
+                save_users(users); st.success("ΟΚ! Κάντε είσοδο.")
 
-# --- 5. MAIN APPLICATION ---
+# --- 5. MAIN APP ---
 def main_app():
     with st.sidebar:
         st.header(f"👤 {st.session_state.user['name']}")
-        st.caption(f"🤖 Brain: {CURRENT_MODEL_NAME.replace('models/', '')}")
+        # Εμφάνιση του μοντέλου που επιλέχθηκε ΑΥΤΟΜΑΤΑ
+        st.caption(f"🧠 AI Auto-Selected: **{CURRENT_MODEL_NAME.replace('models/', '')}**")
         
-        if st.button("🚪 Logout"):
-            st.session_state.user = None; st.rerun()
-            
+        if st.button("🚪 Logout"): st.session_state.user=None; st.rerun()
         st.divider()
-        tech_type = st.radio("🔧 Ειδικότητα:", ["Κλιματισμός (AC)", "Ψύξη (Ψυγεία)", "Θέρμανση (Λέβητες)"])
+        tech_type = st.radio("🔧 Ειδικότητα:", ["Κλιματισμός", "Ψύξη", "Θέρμανση"])
         st.divider()
         
-        # --- CAMERA & MULTI-FILE INPUT ---
-        st.subheader("📸 Κάμερα & Αρχεία")
-        input_method = st.radio("Πηγή:", ["📂 Πολλαπλά Αρχεία", "📷 Κάμερα"], horizontal=True, label_visibility="collapsed")
+        # Inputs
+        st.subheader("📸 Είσοδος")
+        inp_mode = st.radio("Πηγή:", ["📂 Αρχεία", "📷 Κάμερα"], horizontal=True, label_visibility="collapsed")
         
-        # Λίστα για να μαζέψουμε όλα τα paths
-        final_file_paths = []
-        
-        if input_method == "📂 Πολλαπλά Αρχεία":
-            # ΕΔΩ Η ΑΛΛΑΓΗ: accept_multiple_files=True
-            uploaded_files = st.file_uploader("Επιλογή Αρχείων (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "mp4", "mov"], accept_multiple_files=True)
-            
-            if uploaded_files:
-                for uf in uploaded_files:
-                    path = save_uploaded_file(uf)
-                    if path: final_file_paths.append(path)
-                
-                st.success(f"✅ {len(final_file_paths)} αρχεία έτοιμα")
-                
+        final_paths = []
+        if inp_mode == "📂 Αρχεία":
+            files = st.file_uploader("Επιλογή (PDF/Εικόνες)", type=["pdf","jpg","png","mp4"], accept_multiple_files=True)
+            if files:
+                for f in files:
+                    p = save_uploaded_file(f)
+                    if p: final_paths.append(p)
+                st.success(f"✅ {len(final_paths)} αρχεία")
         else:
-            camera_file = st.camera_input("Λήψη Φωτογραφίας")
-            if camera_file:
-                path = save_uploaded_file(camera_file)
-                if path: final_file_paths.append(path)
-                st.success("✅ Φωτογραφία έτοιμη")
+            cam = st.camera_input("Λήψη")
+            if cam:
+                p = save_uploaded_file(cam)
+                if p: final_paths.append(p)
+                st.success("✅ Φωτογραφία ελήφθη")
 
-        # Preview (δείχνουμε μόνο εικόνες για να μην γεμίσει η οθόνη)
-        if final_file_paths:
-            with st.expander("👁️ Προεπισκόπηση Αρχείων", expanded=False):
-                for p in final_file_paths:
-                    if p.endswith((".jpg", ".png", ".jpeg")):
-                        st.image(p, width=150)
-                    else:
-                        st.write(f"📄 {os.path.basename(p)}")
+        if final_paths:
+            with st.expander("👁️ Προβολή"):
+                for p in final_paths:
+                    if p.endswith((".jpg",".png")): st.image(p, width=150)
+                    else: st.write(f"📄 {os.path.basename(p)}")
         
         st.divider()
         if st.button("🔄 Νέα Συσκευή (RESET)", type="primary"):
             st.session_state.messages = []
-            # Δεν χρειάζεται να καθαρίσουμε paths εδώ, καθαρίζουν στο rerun
             st.rerun()
 
         if st.session_state.user.get("role") == "admin":
             st.divider(); 
-            with st.expander("👥 Συνδρομητές"): st.json(load_users())
+            with st.expander("👥 Χρήστες"): st.json(load_users())
 
-    st.title("⚡ HVAC Quick Expert")
+    st.title("⚡ HVAC Expert Pro")
 
     if "messages" not in st.session_state: st.session_state.messages = []
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]): st.markdown(message["content"])
-
-    if prompt := st.chat_input("Περιγράψτε το πρόβλημα..."):
+    if prompt := st.chat_input("Περιγραφή προβλήματος..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("🧠 Ανάλυση (Πολλαπλές Πηγές + Γνώση)..."):
-                response_text = analyze_media_and_chat(
-                    prompt, 
-                    final_file_paths, # Στέλνουμε ΤΗ ΛΙΣΤΑ των αρχείων
-                    st.session_state.messages[:-1],
-                    tech_type
+            with st.spinner("🧠 Ανάλυση..."):
+                resp = analyze_media_and_chat(
+                    prompt, final_paths, st.session_state.messages[:-1], tech_type
                 )
-                st.markdown(response_text)
-                
-        st.session_state.messages.append({"role": "assistant", "content": response_text})
+                st.markdown(resp)
+        st.session_state.messages.append({"role": "assistant", "content": resp})
 
-if st.session_state.user:
-    main_app()
-else:
-    login_screen()
+if st.session_state.user: main_app()
+else: login_screen()
