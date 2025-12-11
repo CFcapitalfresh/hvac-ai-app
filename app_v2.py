@@ -20,12 +20,11 @@ st.markdown("""<style>
 
 # --- GLOBAL SETTINGS ---
 USERS_DB_FILE = "local_users_db.json" 
-CURRENT_MODEL_NAME = "gemini-pro" # Fallback default
+CURRENT_MODEL_NAME = "gemini-pro" 
 
 # --- 1. SETUP GEMINI AI (AUTO-DISCOVERY) ---
 if "GEMINI_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_KEY"])
-    
     try:
         all_models = list(genai.list_models())
         valid_models = [m.name for m in all_models if 'generateContent' in m.supported_generation_methods]
@@ -36,12 +35,10 @@ if "GEMINI_KEY" in st.secrets:
             if p in valid_models:
                 found_model = p
                 break
-        
         if not found_model and valid_models: found_model = valid_models[0]
             
         if found_model:
             CURRENT_MODEL_NAME = found_model
-            st.toast(f"✅ AI Connected: {found_model.replace('models/', '')}", icon="🤖")
         else:
             st.error("❌ Δεν βρέθηκαν συμβατά μοντέλα.")
             
@@ -52,7 +49,6 @@ else:
     st.stop()
 
 # --- 2. LOCAL USER MANAGEMENT ---
-
 def load_users():
     if not os.path.exists(USERS_DB_FILE): return {}
     try:
@@ -66,14 +62,12 @@ def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 # --- 3. HELPER FUNCTIONS ---
-
 def save_uploaded_file(uploaded_file):
+    """Αποθηκεύει ΕΝΑ αρχείο"""
     try:
-        # Αν είναι φωτογραφία από κάμερα (δεν έχει όνομα), δώσε default
         name = uploaded_file.name if hasattr(uploaded_file, 'name') else "camera_capture.jpg"
         suffix = os.path.splitext(name)[1]
-        if not suffix: suffix = ".jpg" # Fallback για camera input
-        
+        if not suffix: suffix = ".jpg"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(uploaded_file.getvalue())
             return tmp.name
@@ -81,40 +75,45 @@ def save_uploaded_file(uploaded_file):
         st.error(f"Error saving file: {e}")
         return None
 
-def analyze_media_and_chat(prompt, file_path, history, tech_type):
-    """Η καρδιά του AI: Με Ενισχυμένη Λογική Διαχωρισμού (Anti-Confusion Logic)"""
+def analyze_media_and_chat(prompt, file_paths_list, history, tech_type):
+    """Η καρδιά του AI: Δέχεται ΛΙΣΤΑ αρχείων"""
     try:
         model = genai.GenerativeModel(CURRENT_MODEL_NAME)
         content_parts = []
         
-        # --- SYSTEM PROMPT (ANTI-CONFUSION) ---
+        # --- SYSTEM PROMPT ---
         system_msg = f"""
-        Είσαι έμπειρος Τεχνικός {tech_type} και αναλυτής τεχνικών εγχειριδίων.
+        Είσαι έμπειρος Τεχνικός {tech_type} και αναλυτής.
         
-        ΚΡΙΣΙΜΟΣ ΚΑΝΟΝΑΣ ΔΙΑΧΩΡΙΣΜΟΥ (ANTI-CONFUSION PROTOCOL):
-        Πρέπει να ξεχωρίζεις αυστηρά τους ΚΩΔΙΚΟΥΣ ΒΛΑΒΗΣ (Error Codes) από τους ΚΩΔΙΚΟΥΣ ΑΝΤΑΛΛΑΚΤΙΚΩΝ (Part Numbers).
+        ΣΤΟΧΟΣ: Να δώσεις την καλύτερη δυνατή τεχνική λύση, συνδυάζοντας τα Manuals/Φωτογραφίες με την Εμπειρία σου.
         
-        1. ΕΛΕΓΧΟΣ ΣΥΜΦΡΑΖΟΜΕΝΩΝ:
-           - Αν ο χρήστης μιλάει για "Σφάλμα", "Βλάβη", "Error": Ψάξε ΜΟΝΟ στους πίνακες "Troubleshooting" ή "Fault Codes".
-           - Αν ο χρήστης ζητάει "Ανταλλακτικό", "Κωδικό": Ψάξε ΜΟΝΟ στους πίνακες "Spare Parts".
+        ΚΑΝΟΝΕΣ:
+        1. **ΕΛΕΓΧΟΣ ΑΡΧΕΙΩΝ (Anti-Confusion):**
+           - Αν υπάρχουν πολλαπλά αρχεία, συνδύασε τις πληροφορίες.
+           - ΠΡΟΣΟΧΗ: Μην μπερδεύεις Κωδικούς Βλάβης (Error Codes) με Κωδικούς Ανταλλακτικών (Part Numbers). Διάβασε τον τίτλο του πίνακα!
            
-        2. ΔΙΑΣΤΑΥΡΩΣΗ:
-           - Ο ίδιος αριθμός (π.χ. 501) μπορεί να είναι Βλάβη σε μια σελίδα και Εξάρτημα σε άλλη. ΜΗΝ ΤΑ ΜΠΕΡΔΕΥΕΙΣ.
+        2. **ΓΕΝΙΚΗ ΓΝΩΣΗ (Υποχρεωτική):**
+           - Ακόμα κι αν βρεις τη λύση στο manual, ΠΡΟΣΘΕΣΕ τη δική σου εμπειρία.
+           - Αν τα αρχεία δεν έχουν την απάντηση, ΑΠΑΝΤΗΣΕ ΚΑΝΟΝΙΚΑ βάσει της γενικής σου γνώσης.
            
-        3. ΔΟΜΗ ΑΠΑΝΤΗΣΗΣ:
-           - Ξεκίνα με: "Σύμφωνα με το manual..."
-           - Απάντησε Ελληνικά, σύντομα και στοχευμένα.
+        3. **ΔΟΜΗ ΑΠΑΝΤΗΣΗΣ:**
+           - Ξεκίνα με: "Σύμφωνα με τα αρχεία..." (αν βρήκες κάτι).
+           - Συνέχισε με: "Βάσει της εμπειρίας μου..." ή "Γενικά σε τέτοιες περιπτώσεις...".
+           - Απάντησε Ελληνικά, σύντομα και πρακτικά.
         """
         content_parts.append(system_msg)
         
-        # Uploaded File
-        if file_path:
-            gfile = genai.upload_file(file_path)
-            while gfile.state.name == "PROCESSING":
-                time.sleep(1)
-                gfile = genai.get_file(gfile.name)
-            content_parts.append(gfile)
-            content_parts.append("Ανάλυσε το αρχείο με βάση το πρωτόκολλο.")
+        # Upload ALL Files
+        if file_paths_list:
+            for fpath in file_paths_list:
+                gfile = genai.upload_file(fpath)
+                # Περίμενε να επεξεργαστεί το κάθε αρχείο
+                while gfile.state.name == "PROCESSING":
+                    time.sleep(0.5)
+                    gfile = genai.get_file(gfile.name)
+                content_parts.append(gfile)
+            
+            content_parts.append("Ανάλυσε τα επισυναπτόμενα αρχεία.")
 
         # History
         for msg in history:
@@ -131,13 +130,11 @@ def analyze_media_and_chat(prompt, file_path, history, tech_type):
         return f"⚠️ Σφάλμα AI ({CURRENT_MODEL_NAME}): {str(e)}"
 
 # --- 4. AUTHENTICATION SCREENS ---
-
 if "user" not in st.session_state: st.session_state.user = None
 
 def login_screen():
     st.title("🔐 HVAC Expert Login")
     users = load_users()
-    if not users: st.warning("⚠️ Η βάση είναι άδεια. Μπες με admin/admin.")
     
     tab1, tab2 = st.tabs(["Είσοδος", "Εγγραφή"])
     
@@ -148,7 +145,6 @@ def login_screen():
             if email == "admin" and password == "admin":
                 st.session_state.user = {"email": "admin", "role": "admin", "name": "Master Admin"}
                 st.rerun()
-            
             if email in users and users[email]["password"] == hash_pass(password):
                 st.session_state.user = users[email]
                 st.rerun()
@@ -166,7 +162,6 @@ def login_screen():
                 st.success("Επιτυχία! Κάντε είσοδο.")
 
 # --- 5. MAIN APPLICATION ---
-
 def main_app():
     with st.sidebar:
         st.header(f"👤 {st.session_state.user['name']}")
@@ -179,36 +174,44 @@ def main_app():
         tech_type = st.radio("🔧 Ειδικότητα:", ["Κλιματισμός (AC)", "Ψύξη (Ψυγεία)", "Θέρμανση (Λέβητες)"])
         st.divider()
         
-        # --- NEW: CAMERA INPUT ---
+        # --- CAMERA & MULTI-FILE INPUT ---
         st.subheader("📸 Κάμερα & Αρχεία")
+        input_method = st.radio("Πηγή:", ["📂 Πολλαπλά Αρχεία", "📷 Κάμερα"], horizontal=True, label_visibility="collapsed")
         
-        # Επιλογή πηγής (για να μην ανοίγει η κάμερα συνέχεια)
-        input_method = st.radio("Επιλογή Πηγής:", ["📂 Ανέβασμα Αρχείου", "📷 Λήψη Φωτογραφίας"], horizontal=True)
+        # Λίστα για να μαζέψουμε όλα τα paths
+        final_file_paths = []
         
-        uploaded_file = None
-        camera_file = None
-        final_file = None
-        
-        if input_method == "📂 Ανέβασμα Αρχείου":
-            uploaded_file = st.file_uploader("Manual/Φωτό/Video", type=["pdf", "jpg", "png", "mp4", "mov"])
-            if uploaded_file: final_file = uploaded_file
+        if input_method == "📂 Πολλαπλά Αρχεία":
+            # ΕΔΩ Η ΑΛΛΑΓΗ: accept_multiple_files=True
+            uploaded_files = st.file_uploader("Επιλογή Αρχείων (PDF, JPG, PNG)", type=["pdf", "jpg", "png", "mp4", "mov"], accept_multiple_files=True)
             
-        elif input_method == "📷 Λήψη Φωτογραφίας":
-            camera_file = st.camera_input("Τράβηξε φωτογραφία")
-            if camera_file: final_file = camera_file
+            if uploaded_files:
+                for uf in uploaded_files:
+                    path = save_uploaded_file(uf)
+                    if path: final_file_paths.append(path)
+                
+                st.success(f"✅ {len(final_file_paths)} αρχεία έτοιμα")
+                
+        else:
+            camera_file = st.camera_input("Λήψη Φωτογραφίας")
+            if camera_file:
+                path = save_uploaded_file(camera_file)
+                if path: final_file_paths.append(path)
+                st.success("✅ Φωτογραφία έτοιμη")
 
-        current_file_path = None
-        if final_file:
-            current_file_path = save_uploaded_file(final_file)
-            st.success("✅ Αρχείο έτοιμο για ανάλυση")
-            # Αν είναι εικόνα (είτε upload είτε camera), δείξε preview
-            if hasattr(final_file, 'type') and final_file.type.startswith("image") or input_method == "📷 Λήψη Φωτογραφίας":
-                st.image(final_file, caption="Προς Ανάλυση", use_container_width=True)
+        # Preview (δείχνουμε μόνο εικόνες για να μην γεμίσει η οθόνη)
+        if final_file_paths:
+            with st.expander("👁️ Προεπισκόπηση Αρχείων", expanded=False):
+                for p in final_file_paths:
+                    if p.endswith((".jpg", ".png", ".jpeg")):
+                        st.image(p, width=150)
+                    else:
+                        st.write(f"📄 {os.path.basename(p)}")
         
         st.divider()
         if st.button("🔄 Νέα Συσκευή (RESET)", type="primary"):
             st.session_state.messages = []
-            st.session_state.uploaded_file_path = None 
+            # Δεν χρειάζεται να καθαρίσουμε paths εδώ, καθαρίζουν στο rerun
             st.rerun()
 
         if st.session_state.user.get("role") == "admin":
@@ -227,10 +230,10 @@ def main_app():
         with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("🧠 Ανάλυση..."):
+            with st.spinner("🧠 Ανάλυση (Πολλαπλές Πηγές + Γνώση)..."):
                 response_text = analyze_media_and_chat(
                     prompt, 
-                    current_file_path,
+                    final_file_paths, # Στέλνουμε ΤΗ ΛΙΣΤΑ των αρχείων
                     st.session_state.messages[:-1],
                     tech_type
                 )
